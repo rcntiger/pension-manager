@@ -698,6 +698,7 @@ function defaultState(){
 }
 let S = load();
 let ui = { tab:'home', owner:'all', strat:'cap1500', taxYear:THIS_YEAR };
+{ const h = (location.hash || '').slice(1); if(['home','acc','tax','draw','set'].includes(h)) ui.tab = h; }   // 다른 앱에서 #탭 으로 바로 열기
 
 function load(){
   try{ const raw = localStorage.getItem(KEY); if(raw){ const s = JSON.parse(raw); return migrate(s); } }catch(e){}
