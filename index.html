@@ -651,6 +651,9 @@ label.ck{font-size:13px;font-weight:500;display:inline-flex;gap:4px;align-items:
         const y = yearOf(a.isaMaturity);
         if (y - year <= 1 && y >= year) out.push({ level: 'warn', text: `${a.name}: ${a.isaMaturity} 만기 — 만기 후 60일 안에 연금계좌로 옮기면 추가 세액공제(최대 300만원)` });
       }
+      if ((a.type === 'pension' || a.type === 'irp' || a.type === 'isa') && !a.openedAt) {
+        out.push({ level: 'warn', text: `${a.name}: 개설일을 입력하세요 (연금 수령 시기·ISA 만기 계산에 필요)` });
+      }
       if (a.type === 'irp' && +a.riskyPct > 70) {
         out.push({ level: 'warn', text: `${a.name}: 위험자산 비중 ${+a.riskyPct}% (IRP 한도 70%)` });
       }
@@ -1205,18 +1208,42 @@ function cfBuild(D){
   }
   for(const a of (D.assets || [])){
     if(CF_FIN.indexOf(a.cat) < 0) continue;
-    out.assets.push({ cfId:a.id, name:a.name + (a.owner && a.owner !== '공동' ? ` (${cfNick(D, a.owner)})` : ''), cat:a.cat, value:Math.round(cfNum(a.value)*1e4), owner:a.owner, src:a.src || '' });
+    out.assets.push({ cfId:a.id, name:a.name + (a.owner && a.owner !== '공동' ? ` (${cfNick(D, a.owner)})` : ''), cat:a.cat, acct:a.acct, rawName:a.name, value:Math.round(cfNum(a.value)*1e4), owner:a.owner, src:a.src || '' });
   }
   return out;
 }
-// 자산 연결 기본값: 이미 연결한 것 유지 → 이름이 같은 연금계좌 → 연금 분류면 미연결 → 나머지는 일반자산
-function cfDefaultMap(asset){
-  const m = (S.cf && S.cf.map) || {};
-  if(m[asset.cfId] != null) return m[asset.cfId];
-  const same = S.accounts.find(a => !a.closed && a.type !== 'general' && a.name.replace(/\s/g,'') === asset.name.replace(/\s*\(.*\)$/,'').replace(/\s/g,''));
-  if(same) return same.id;
-  if(asset.cat === 'pension' || /ISA|IRP|연금/i.test(asset.name)) return '';
-  return 'general';
+// 자산 연결 기본값
+// 1) 캐시플로우 '계좌 종류'가 있으면 그것을 따름: 일반 → 일반자산, 연금저축·IRP·ISA → 같은 종류·명의 계좌(없으면 새로 만듦)
+// 2) 없으면 이전 연결 → 같은 이름 계좌 → 이름으로 종류 추정 → 일반자산
+const CF_NEW = { pension:'새 연금저축 계좌로 만들기', irp:'새 IRP 계좌로 만들기', isa:'새 ISA 계좌로 만들기' };
+const cfGuessType = n => /IRP|퇴직|DC/i.test(n) ? 'irp' : /ISA/i.test(n) ? 'isa' : /연금/.test(n) ? 'pension' : '';
+const normName = n => String(n||'').replace(/\s*\(.*\)$/,'').replace(/\s/g,'');
+function cfDefaultMaps(assets){
+  const saved = (S.cf && S.cf.map) || {}, claimed = new Set(), out = [];
+  const live = S.accounts.filter(a => !a.closed && a.type !== 'general');
+  const pick = (asset, type) => {
+    const owner = cfOwnerToMember(asset.owner);
+    const prev = saved[asset.cfId]; const pa = live.find(a => a.id === prev);
+    if(pa && pa.type === type) return pa.id;
+    const byName = live.find(a => a.type === type && normName(a.name) === normName(asset.rawName) && !claimed.has(a.id));
+    if(byName) return byName.id;
+    const cands = live.filter(a => a.type === type && a.owner === owner && !claimed.has(a.id) && !Object.values(saved).includes(a.id));
+    if(cands.length === 1) return cands[0].id;
+    return 'new:' + type;
+  };
+  for(const asset of assets){
+    let v;
+    if(asset.acct != null){ v = asset.acct ? pick(asset, asset.acct) : 'general'; }
+    else {
+      const prev = saved[asset.cfId], guess = cfGuessType(asset.rawName);
+      if(prev != null && !(prev === 'general' && guess)) v = prev;              // 연금 이름인데 일반자산으로 묶였던 것은 다시 제안
+      else if(guess) v = pick(asset, guess);
+      else v = 'general';
+    }
+    if(v && !v.startsWith('new:') && v !== 'general') claimed.add(v);
+    out.push(v);
+  }
+  return out;
 }
 async function cfOpen(){
   if(!sb || !_user){ toast('먼저 로그인하세요'); return; }
@@ -1230,7 +1257,9 @@ async function cfOpen(){
 function cfPreview(){
   const it = CF.items, ms = S.profile.members;
   const chk = (k, n) => `<label class="ck"><input type="checkbox" id="cfk_${k}" ${n?'checked':''} ${n?'':'disabled'}> 반영</label>`;
+  const defs = cfDefaultMaps(it.assets);
   const accOpts = sel => `<option value="general" ${sel==='general'?'selected':''}>일반자산 합계</option><option value="" ${sel===''?'selected':''}>제외</option>` +
+    Object.entries(CF_NEW).map(([k,l])=>`<option value="new:${k}" ${sel==='new:'+k?'selected':''}>${l}</option>`).join('') +
     S.accounts.filter(a=>!a.closed && a.type!=='general').map(a=>`<option value="${a.id}" ${sel===a.id?'selected':''}>${esc(a.name)} (${TYPES[a.type]})</option>`).join('');
   const sec = (k, title, n, body) => `<div class="card"><h2>${title}<span class="sp"></span>${chk(k, n)}</h2>${n ? body : '<div class="meta">캐시플로우에 없음</div>'}</div>`;
   return `<div class="sheet-bg" data-act="closeSheetBg"><div class="sheet">
@@ -1244,8 +1273,8 @@ function cfPreview(){
       <div class="row"><span class="k">생활비 시작(인출 시작)</span><span class="v">${it.spend.startYear||'-'}년</span></div>
       ${it.spend.phases.map(p=>`<div class="row"><span class="k">${p.fromYear}년부터</span><span class="v">${man(p.monthly)}</span></div>`).join('')}
       ${it.spend.note?`<p class="note">${esc(it.spend.note)}</p>`:''}` : '')}
-    ${sec('assets','자산 평가액 → 계좌 연결', it.assets.length, it.assets.map((a,i)=>`<label class="f"><span>${esc(a.name)} · ${CF_CAT[a.cat]} · <b>${man(a.value)}</b></span><select id="cfm_${i}">${accOpts(cfDefaultMap(a))}</select></label>`).join('') +
-      '<p class="note">같은 계좌에 연결한 자산은 합산합니다. 캐시플로우는 ISA를 주식으로 분류하니 ISA 계좌에 직접 연결하세요.</p>')}
+    ${sec('assets','자산 평가액 → 계좌 연결', it.assets.length, it.assets.map((a,i)=>`<label class="f"><span>${esc(a.name)} · ${CF_CAT[a.cat]} · <b>${man(a.value)}</b></span><select id="cfm_${i}">${accOpts(defs[i])}</select>${a.acct?`<span class="meta">캐시플로우 계좌 종류: ${({'':'일반',pension:'연금저축',irp:'IRP',isa:'ISA'})[a.acct]||a.acct}</span>`:''}</label>`).join('') +
+      '<p class="note">같은 계좌에 연결한 자산은 합산합니다. 캐시플로우 자산 화면의 \'계좌 종류\'를 정해 두면 다음부터 자동으로 연결됩니다.</p>')}
     <button class="btn block" data-act="cfApply">선택한 항목 반영</button>
   </div></div>`;
 }
@@ -1272,7 +1301,16 @@ function cfApply(){
   }
   if(on('assets')){
     const sums = {}; const date = new Date().toISOString().slice(0,10);
-    it.assets.forEach((a,i) => { const v = val('cfm_'+i); S.cf.map[a.cfId] = v; if(v) sums[v] = (sums[v]||0) + a.value; });
+    let made = 0;
+    it.assets.forEach((a,i) => {
+      let v = val('cfm_'+i);
+      if(v.startsWith('new:')){
+        const acc = { id:uid('a'), type:v.slice(4), owner:cfOwnerToMember(a.owner), name:a.rawName, institution:'', openedAt:'', history:[], plannedAnnual:0, isaKind:'normal' };
+        S.accounts.push(acc); v = acc.id; made++;
+      }
+      S.cf.map[a.cfId] = v; if(v) sums[v] = (sums[v]||0) + a.value;
+    });
+    if(made) setTimeout(() => toast(`계좌 ${made}개를 만들었습니다. 계좌 탭에서 개설일과 납입 내역을 입력하세요`), 1900);
     for(const [id, v] of Object.entries(sums)){
       let acc = id === 'general' ? S.accounts.find(a => a.cfGeneral) : S.accounts.find(a => a.id === id);
       if(!acc && id === 'general'){ acc = { id:uid('a'), type:'general', owner:ms[0].id, name:'일반자산 (캐시플로우)', institution:'', history:[], cfGeneral:true }; S.accounts.push(acc); }
