@@ -1129,7 +1129,9 @@ function cloudCard(){
   if(_user) return `<div class="card"><h2>클라우드 동기화<span class="sp"></span><span class="meta">${esc(_user.email)}</span></h2>
     <p class="note">캐시플로우·리밸런서와 같은 계정입니다. 부부가 같은 연금 장부를 함께 씁니다.</p>
     <div class="grid2" style="margin-top:8px"><button class="btn" data-act="cfOpen">캐시플로우에서 불러오기</button><button class="btn ghost" data-act="signOut">로그아웃</button></div>
-    ${S.cf && S.cf.importedAt ? `<p class="note" style="margin-top:8px">마지막 불러오기: ${esc(S.cf.importedAt.slice(0,16).replace('T',' '))}</p>` : ''}</div>`;
+    ${S.cf && S.cf.importedAt ? `<p class="note" style="margin-top:8px">마지막 불러오기: ${esc(S.cf.importedAt.slice(0,16).replace('T',' '))}</p>` : ''}
+    <label style="display:flex;gap:10px;align-items:flex-start;margin-top:10px;cursor:pointer"><input type="checkbox" data-act="cfAutoToggle" ${cfAutoOn()?'checked':''} style="width:18px;height:18px;margin-top:2px">
+      <span class="note" style="margin:0">자동 반영 — 앱을 열거나 돌아올 때 캐시플로우의 최신 평가액으로 연결된 계좌를 맞춥니다 (이 기기)</span></label></div>`;
   return `<div class="card"><h2>클라우드 동기화 · 캐시플로우 연결</h2>
     <p class="note">캐시플로우·리밸런서에서 쓰는 이메일로 로그인하면 기기 간 동기화와 캐시플로우 불러오기를 쓸 수 있습니다.</p>
     ${_otpEmail ? `<label class="f"><span>${esc(_otpEmail)}로 온 6자리 코드</span><input id="fCode" inputmode="numeric" autocomplete="one-time-code"></label>
@@ -1300,7 +1302,7 @@ function cfApply(){
     sim.spendPhases = it.spend.phases; sim.spendSrc = 'cf';
   }
   if(on('assets')){
-    const sums = {}; const date = new Date().toISOString().slice(0,10);
+    const sums = {}; const date = localDay();
     let made = 0;
     it.assets.forEach((a,i) => {
       let v = val('cfm_'+i);
@@ -1322,6 +1324,32 @@ function cfApply(){
   }
   S.cf.importedAt = new Date().toISOString();
   save(); closeSheet(); toast('캐시플로우 내용을 반영했습니다'); render();
+}
+
+/* ---------- 캐시플로우 자동 반영: 앱을 열거나 돌아올 때, 이미 연결한 계좌 평가액만 맞춤 ----------
+   가족·수입·생활비 등은 지금처럼 '불러오기'로만 바꿈. 연결 안 된 새 자산은 알림만. (이 기기에서 끌 수 있음) */
+// 한국 시간 기준 오늘 (UTC로 자르면 오전 9시 전에는 어제 날짜가 됨)
+function localDay(d=new Date()){ return new Date(d - d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
+function cfAutoOn(){ try{ return localStorage.getItem('pm_cf_auto') !== '0'; }catch(e){ return true; } }
+async function cfAuto(){
+  if(!sb || !_user || !cfAutoOn() || !S.cf || !S.cf.map || !Object.keys(S.cf.map).length) return;
+  try{
+    const r = await sb.from('cashflow_data').select('data,updated_at').eq('household','home').maybeSingle();
+    if(r.error || !r.data) return;
+    const items = cfBuild(r.data.data || {}).assets;
+    const sums = {}; let unmapped = 0;
+    items.forEach(a => { if(!(a.cfId in S.cf.map)){ unmapped++; return; } const v = S.cf.map[a.cfId]; if(v) sums[v] = (sums[v]||0) + a.value; });
+    const date = localDay(), msgs = [];
+    for(const [id, v] of Object.entries(sums)){
+      const acc = id === 'general' ? S.accounts.find(a => a.cfGeneral) : S.accounts.find(a => a.id === id);
+      if(!acc || acc.reportedValue === v) continue;
+      msgs.push(`${acc.name} ${man(acc.reportedValue||0)}→${man(v)}`);
+      acc.reportedValue = v; acc.valueDate = date; acc.valueSrc = 'cf';
+      acc.history = (acc.history || []).filter(h => h.date !== date); acc.history.push({ date, value:v });
+    }
+    if(msgs.length){ S.cf.autoAt = new Date().toISOString(); save(); render(); toast('캐시플로우 변경 반영: ' + msgs.join(', ')); }
+    else if(unmapped) toast(`캐시플로우에 연결 안 된 자산 ${unmapped}개 — 설정 › 캐시플로우에서 불러오기`);
+  }catch(e){ console.warn('캐시플로우 자동 반영 실패', e); }
 }
 
 /* ---------- 수입·목돈·생활비 구간 (직접 입력) ---------- */
@@ -1351,6 +1379,7 @@ const PLAN_ACTIONS = {
   otpBack(){ _otpEmail = ''; render(); },
   async signOut(){ if(sb) await sb.auth.signOut(); _user = null; setCloud('off'); render(); },
   cfOpen, cfApply,
+  cfAutoToggle(d, el){ try{ localStorage.setItem('pm_cf_auto', el.checked ? '1' : '0'); }catch(e){} if(el.checked) cfAuto(); },
   editInc(d){
     const x = (S.profile.sim.incomes||[]).find(i=>i.id===d.id) || {};
     openSheet(formSheet(x.id?'기간 수입 수정':'기간 수입 추가', `
@@ -1483,9 +1512,10 @@ if(sb){
     const changed = (u && u.id) !== (_user && _user.id);
     _user = u;
     if(!u){ setCloud('off'); return; }
-    if(changed){ setTimeout(() => { cloudPull(); if(ui.tab==='set') render(); }, 0); }
+    if(changed){ setTimeout(async () => { await cloudPull(); if(ui.tab==='set') render(); setTimeout(cfAuto, 300); }, 0); }
   });
-  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible' && _user) cloudPull(); });
+  // 동기화를 먼저 받은 뒤 캐시플로우 자동 반영 (서버 장부를 덮어쓰지 않도록)
+  document.addEventListener('visibilitychange', async () => { if(document.visibilityState === 'visible' && _user){ await cloudPull(); setTimeout(cfAuto, 300); } });
 }
 })();
 </script>
