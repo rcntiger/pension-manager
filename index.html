@@ -3,7 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#2a78d6">
+<meta name="theme-color" content="#f4f4f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121211" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest?v=1">
+<link rel="apple-touch-icon" href="apple-touch-icon.png?v=1">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png?v=1">
 <title>연금·절세 통합관리</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
@@ -188,7 +192,13 @@ details.fold>.body>.card{margin:8px 0;border-color:var(--line)}
     // 종합소득세 누진세율 [과세표준 상한, 세율, 누진공제]
     brackets: [[14e6, .06, 0], [50e6, .15, 1.26e6], [88e6, .24, 5.76e6], [150e6, .35, 15.44e6],
                [300e6, .38, 19.94e6], [500e6, .40, 25.94e6], [1e9, .42, 35.94e6], [Infinity, .45, 65.94e6]],
-    basicDeduction: 1500000
+    basicDeduction: 1500000,
+    // 지역 건강보험료 (2026: 건보 7.19%, 장기요양 0.9448%)
+    hiRate: 0.0719, ltcRate: 0.009448,
+    hiPublicShare: 0.5,          // 공적연금은 절반만 부과 (사적연금·ISA는 부과 안 함)
+    hiFinThreshold: 10000000,    // 이자·배당 연 1,000만원 초과 시 전액 부과
+    hiDependentLimit: 20000000,  // 피부양자 소득 기준 연 2,000만원
+    yearlyDepositCap: 18000000
   };
 
   const PENSION_TYPES = ['pension', 'irp'];
@@ -412,7 +422,7 @@ details.fold>.body>.card{margin:8px 0;border-color:var(--line)}
     const r = +sim.returnRate / 100, inf = +sim.inflation / 100;
     const endYear = Math.max(...members.map(m => m.birthYear + (+sim.endAge || 90)));
     const rows = [];
-    let totalTax = 0, totalRefund = 0, depletedYear = null, totalShort = 0;
+    let totalTax = 0, totalRefund = 0, depletedYear = null, totalShort = 0, totalHI = 0;
     const firstT = {}; // 실제 수령 시작연도 (퇴직소득 감면 연차용)
 
     for (let y = baseYear + 1; y <= endYear; y++) {
@@ -477,8 +487,22 @@ details.fold>.body>.card{margin:8px 0;border-color:var(--line)}
       }
 
       const retired = y >= +sim.startYear;
-      const publicByMember = {};
-      for (const m of members) publicByMember[m.id] = 0;
+      const publicByMember = {}, npsByMember = {};
+      let rentIncome = 0;
+      for (const m of members) { publicByMember[m.id] = 0; npsByMember[m.id] = 0; }
+      row.npsGross = 0; row.hi = 0;
+      // 퇴직 전후 연금계좌 추가 납입: 일반자산 → 연금계좌 비공제 원금 (연 1,800만 한도에서 계획 납입분 제외)
+      const xd = sim.extraDeposit;
+      if (xd && xd.on && xd.to && y >= +xd.startYear && y < +xd.startYear + (+xd.years || 1)) {
+        const target = accs.find(a => a.id === xd.to && isPension(a));
+        if (target) {
+          const plannedSame = y < +sim.startYear ? sum(accs.filter(a => isPension(a) && a.owner === target.owner), a => a.planned || 0) : 0;
+          let want = Math.min(+xd.amount || 0, Math.max(0, RULES.yearlyDepositCap - plannedSame));
+          let moved = 0;
+          for (const g of accs.filter(a => a.type === 'general')) { const t = Math.min(g.value, want - moved); g.value -= t; moved += t; if (moved >= want) break; }
+          if (moved > 0) { target.noncredit += moved; row.notes.push(`${target.name}에 ${fmtMan(moved)} 추가 납입(비공제)`); }
+        }
+      }
       if (!retired) {
         // 적립기: 계획 납입 → 공제
         const byOwner = {};
@@ -503,7 +527,10 @@ details.fold>.body>.card{margin:8px 0;border-color:var(--line)}
         row.need = monthlyNeedAt(sim, y) * 12 * infl + lumpOut;
         row.other = (+sim.otherMonthly || 0) * 12 * infl;
         for (const inc of (sim.incomes || [])) {
-          if (y >= +inc.startYear && y <= +(inc.endYear || 9999)) row.other += (+inc.monthly || 0) * 12 * infl;
+          if (!(y >= (+inc.startYear || 0) && y <= +(inc.endYear || 9999))) continue;
+          const amt = (+inc.monthly || 0) * 12 * infl;
+          if (inc.kind === 'nps') { const o = members.find(m => m.id === inc.owner) ? inc.owner : members[0].id; npsByMember[o] = (npsByMember[o] || 0) + amt; row.npsGross += amt; }
+          else { row.other += amt; if (inc.kind === 'rent') rentIncome += amt; }
         }
         for (const m of members) {
           const pp = m.publicPension || {};
@@ -512,6 +539,26 @@ details.fold>.body>.card{margin:8px 0;border-color:var(--line)}
             publicByMember[m.id] = g; row.publicGross += g;
           }
         }
+      }
+      row.publicGross += row.npsGross;
+      // 지역 건강보험료 (은퇴 후): 공적연금 절반 + 금융소득(1,000만 초과 시 전액) + 임대·사업소득 + 재산분
+      if (retired && sim.hiOn !== false) {
+        const yieldR = (sim.generalYield != null ? +sim.generalYield : 2) / 100;
+        const finBy = {}; let fin = 0;
+        for (const g of accs.filter(a => a.type === 'general')) { const v = g.value * yieldR; finBy[g.owner] = (finBy[g.owner] || 0) + v; fin += v; }
+        const pubAll = sum(members, m => publicByMember[m.id] + npsByMember[m.id]);
+        const overDep = members.some(m => publicByMember[m.id] + npsByMember[m.id] + (finBy[m.id] || 0) + (m.id === members[0].id ? rentIncome : 0) > RULES.hiDependentLimit);
+        if (overDep) {
+          const base = pubAll * RULES.hiPublicShare + (fin > RULES.hiFinThreshold ? fin : 0) + rentIncome;
+          row.hi = base * (RULES.hiRate + RULES.ltcRate) + (+sim.propertyHI || 0) * 12 * infl;
+          row.hiFin = fin;
+        }
+        totalHI += row.hi;
+      }
+      const taxablePub = {};
+      for (const m of members) {
+        const ratio = (m.publicPension && m.publicPension.taxableRatio != null) ? +m.publicPension.taxableRatio / 100 : 1;
+        taxablePub[m.id] = publicByMember[m.id] * ratio + npsByMember[m.id];
       }
       if (row.need > 0 || row.publicGross > 0) {
         // 연초 평가액 기준 수령한도
@@ -522,7 +569,7 @@ details.fold>.body>.card{margin:8px 0;border-color:var(--line)}
           s.limitLeft = withdrawalLimit(valueOf(s), n);
           if (n >= 1 && valueOf(s) > 0 && !firstT[s.id]) firstT[s.id] = y;
         }
-        const result = drawForYear(accs, members, row, publicByMember, strategyKey, firstT, y);
+        const result = drawForYear(accs, members, row, taxablePub, strategyKey, firstT, y);
         row.tax += result.tax; totalTax += result.tax;
         row.short = result.short; totalShort += result.short;
         if (result.short > 1 && depletedYear == null) depletedYear = y;
@@ -540,13 +587,13 @@ details.fold>.body>.card{margin:8px 0;border-color:var(--line)}
       row.byAccount = Object.fromEntries(accs.map(s => [s.id, valueOf(s)]));
       rows.push(row);
     }
-    return { strategy: strategyKey, rows, totalTax, totalRefund, depletedYear, totalShort,
+    return { strategy: strategyKey, rows, totalTax, totalRefund, depletedYear, totalShort, totalHI,
              endBalance: rows.length ? rows[rows.length - 1].balance : 0,
              endBalanceReal: rows.length ? rows[rows.length - 1].balanceReal : 0 };
   }
 
   // 한 해 인출: 필요 순액을 맞출 때까지 전략 순서대로 인출, 1,500만 초과 시 정산세 재반영
-  function drawForYear(accs, members, row, publicByMember, strategyKey, firstT, y) {
+  function drawForYear(accs, members, row, taxablePub, strategyKey, firstT, y) {
     const snapshot = accs.map(s => ({ ...s }));
     let extra = 0, res;
     for (let iter = 0; iter < 4; iter++) {
@@ -554,18 +601,14 @@ details.fold>.body>.card{margin:8px 0;border-color:var(--line)}
       snapshot.forEach((s, i) => Object.assign(accs[i], s));
       // 공적연금 세금(단독 종합과세) — 사적연금 정산 전
       let publicTax = 0;
-      for (const m of members) {
-        const ratio = (m.publicPension && m.publicPension.taxableRatio != null) ? +m.publicPension.taxableRatio / 100 : 1;
-        publicTax += comprehensivePensionTax(publicByMember[m.id] * ratio);
-      }
-      const gap = Math.max(0, row.need - (row.publicGross - publicTax) - row.other) + extra;
+      for (const m of members) publicTax += comprehensivePensionTax(taxablePub[m.id] || 0);
+      const gap = Math.max(0, row.need + (row.hi || 0) - (row.publicGross - publicTax) - row.other) + extra;
       res = runDraws(accs, members, gap, strategyKey, firstT, y);
       // 1인당 사적연금 과세대상 정산
       let settle = 0; const choice = {};
       for (const m of members) {
         const pt = res.privateT[m.id] || 0;
-        const ratio = (m.publicPension && m.publicPension.taxableRatio != null) ? +m.publicPension.taxableRatio / 100 : 1;
-        const pub = publicByMember[m.id] * ratio;
+        const pub = taxablePub[m.id] || 0;
         const withheld = res.withheldT[m.id] || 0;
         const base = comprehensivePensionTax(pub);
         const comp = comprehensivePensionTax(pub + pt) - base;
@@ -709,6 +752,7 @@ const KEY = 'pensionApp.v1';
 const THIS_YEAR = new Date().getFullYear();
 const TYPES = { pension:'연금저축', irp:'IRP', isa:'ISA', general:'일반' };
 const KINDS = { personal:'본인 납입(공제 자동판정)', noncredit:'공제 안 받은 납입', retire:'퇴직금(퇴직수당)', isaTransfer:'ISA 만기 이전' };
+const INC_KINDS = { '':'일반 수입 (급여 등)', nps:'국민연금', rent:'임대·사업소득' };
 const KIND_SHORT = { personal:'납입', noncredit:'비공제', retire:'퇴직금', isaTransfer:'ISA이전' };
 const SCOLOR = { cap1500:'var(--s1)', pensionFirst:'var(--s2)', isaFirst:'var(--s3)' };
 
@@ -820,7 +864,7 @@ function renderHome(){
     <div class="grid2" style="margin-top:10px"><button class="btn" data-act="newAccount">계좌 추가</button><button class="btn ghost" data-act="sample">예시로 둘러보기</button></div>
     <p class="note" style="margin-top:10px">오른쪽 위 ⋮ → <b>설정</b>에서 가족 출생연도·공적연금을 입력하고, 캐시플로우를 쓰면 로그인 후 불러오세요.</p></div>`;
   let total=0, principal=0; const byType={};
-  for(const a of accs){ const v = posOf(a).value; total += v; principal += principalSum(a); byType[a.type] = (byType[a.type]||0) + v; }
+  for(const a of accs){ const v = posOf(a).value; total += v; principal += accPrincipal(a).v; byType[a.type] = (byType[a.type]||0) + v; }
   const pnl = total - principal;
   const kinds = Object.keys(TYPES).filter(k=>byType[k] > 0);
   const stack = kinds.map(k=>`<i style="width:${byType[k]/total*100}%;background:${TYPE_COLOR[k]}"></i>`).join('');
@@ -854,22 +898,25 @@ function rankSims(a,b){ // 고갈이 늦을수록, 같으면 세금 적을수록
 }
 
 /* ---------- 계좌: 목록은 요약만, 원금 구분·납입은 상세에서 ---------- */
-function accReturn(a, pos){
+// 원금: 납입 내역 → 없으면 리밸런서 원금
+function accPrincipal(a){
   const pr = E.isPension(a) ? E.principalOf(a, S.deposits, E.classifyDeposits(S.accounts, S.deposits, S.profile.members)).total : principalSum(a);
-  return pr > 0 ? (pos.value - pr) / pr : null;
+  return pr > 0 ? { v:pr, src:'dep' } : (+a.principalRB > 0 ? { v:+a.principalRB, src:'rb' } : { v:0, src:'' });
 }
+function accReturn(a, pos){ const p = accPrincipal(a); return p.v > 0 ? (pos.value - p.v) / p.v : null; }
 function renderAccounts(){
   const accs = visibleAccounts();
   const cards = accs.map(a => {
     const pos = posOf(a), m = memberById(a.owner), ret = accReturn(a, pos);
     return `<div class="card acc" data-act="openAccount" data-id="${a.id}">
       <div class="top"><span class="badge ${a.type}">${TYPES[a.type]}</span><span class="name">${esc(a.name)}</span><span class="val">${eok(pos.value)}</span></div>
-      <div class="top" style="margin-top:3px"><span class="meta" style="flex:1">${esc(m.name)}${a.institution?' · '+esc(a.institution):''}${a.valueSrc==='cf'?' · 캐시플로우':''}</span>
-        <span class="ret ${ret==null?'meta':ret>=0?'pos':'neg'}">${ret==null?'원금 미입력':(ret>=0?'+':'')+(ret*100).toFixed(1)+'%'}</span></div></div>`;
+      <div class="top" style="margin-top:3px"><span class="meta" style="flex:1">${esc(m.name)}${a.institution?' · '+esc(a.institution):''}${a.valueSrc==='cf'?' · 캐시플로우':''}${accPrincipal(a).src==='rb'?' · 원금 리밸런서':''}</span>
+        <span class="ret ${ret==null?'meta':ret>=0?'pos':'neg'}">${ret==null?'원금 미입력':(ret>=0?'+':'')+(ret*100).toFixed(1)+'%'}</span></div>
+</div>`;
   }).join('');
   return `${cards || '<div class="empty">등록된 계좌가 없습니다</div>'}
     <button class="btn block" data-act="newAccount">+ 계좌 추가</button>
-    <p class="note" style="margin-top:12px">계좌를 누르면 원금 구분·평가액·납입 내역을 볼 수 있습니다. 종목·매매는 리밸런서에서 관리합니다.</p>`;
+    <p class="note" style="margin-top:12px">계좌를 누르면 원금 구분·평가액·납입 내역을 볼 수 있습니다. '원금 리밸런서'는 리밸런서의 납입원금으로 수익률만 계산한 것이라, 세금 계산을 정확히 하려면 연도별 납입 내역을 넣어 주세요.</p>`;
 }
 
 function accountForm(a){
@@ -892,7 +939,7 @@ function accountForm(a){
         <p class="note" style="margin-top:6px">인출할 때 비공제 → 퇴직금 → 공제분·수익 순으로 빠지며 세금이 달라집니다.</p>`;
     }
     summary = `<div class="card hero" style="margin-top:4px"><div class="lbl">${TYPES[a.type]} · ${esc(memberById(a.owner).name)}${a.institution?' · '+esc(a.institution):''}</div>
-      <div class="num">${eok(pos.value)}</div><div class="sub">${ret==null?'납입 내역을 넣으면 수익률이 계산됩니다':`수익률 <span class="${ret>=0?'pos':'neg'}">${(ret>=0?'+':'')+(ret*100).toFixed(1)}%</span>`}${a.valueDate?` · 평가 ${esc(a.valueDate)}`:''}</div>${bar}</div>`;
+      <div class="num">${eok(pos.value)}</div><div class="sub">${ret==null?'납입 내역을 넣으면 수익률이 계산됩니다':`수익률 <span class="${ret>=0?'pos':'neg'}">${(ret>=0?'+':'')+(ret*100).toFixed(1)}%</span>${accPrincipal(a).src==='rb'?` (원금 ${eok(accPrincipal(a).v)}, 리밸런서)`:''}`}${a.valueDate?` · 평가 ${esc(a.valueDate)}`:''}</div>${bar}</div>`;
   }
   const infoForm = `<div class="card" style="margin-top:${isNew?4:0}px">
       <div class="fr"><label class="f"><span>종류</span><select id="fType">${tOpts}</select></label>
@@ -1011,10 +1058,15 @@ function renderDraw(){
   const nInc = (sim.incomes||[]).length, nLump = (sim.lumps||[]).length, nPh = (sim.spendPhases||[]).length;
   const condSummary = `<div class="cond"><b>${sim.startYear}년</b> 인출 시작 · 생활비 <b>월 ${man(sim.monthlyNeed)}</b>${nPh?` (구간 ${nPh}개)`:''}<br>
     수익률 <b>${sim.returnRate}%</b> · 물가 <b>${sim.inflation}%</b> · ${sim.endAge}세까지 계산<br>
-    공적연금 ${pubs || '<span class="bad">미입력</span>'}${nInc||nLump?` · 수입 ${nInc}건 · 목돈 ${nLump}건`:''}</div>`;
+    공적연금 ${pubs || '<span class="bad">미입력</span>'}${nInc||nLump?` · 수입 ${nInc}건 · 목돈 ${nLump}건`:''}<br>
+    건보료 ${sim.hiOn===false?'계산 안 함':`계산함 (배당·이자율 ${sim.generalYield!=null?sim.generalYield:2}%${+sim.propertyHI?` · 재산분 월 ${man(sim.propertyHI)}`:''})`}${sim.extraDeposit&&sim.extraDeposit.on?' · 연금계좌 추가 납입 ✓':''}</div>`;
   const condEdit = `<div class="fr">${f('startYear','인출 시작 연도')}${f('endAge','계산 종료 나이')}</div>
     <div class="fr">${f('monthlyNeed','기본 월 생활비(만원)','man')}${f('otherMonthly','기타 월수입(만원)','man')}</div>
     <div class="fr">${f('returnRate','연 수익률(%)')}${f('inflation','물가상승률(%)')}</div>
+    <label class="f" style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" data-bind="profile.sim.hiOn" ${sim.hiOn!==false?'checked':''}><span style="margin:0;font-size:14px;color:var(--text)">지역 건강보험료 계산</span></label>
+    <div class="fr"><label class="f"><span>일반자산 배당·이자율(%)</span><input inputmode="decimal" data-bind="profile.sim.generalYield" data-num value="${sim.generalYield!=null?sim.generalYield:2}"></label>
+      <label class="f"><span>재산분 건보료(월, 만원)</span><input inputmode="decimal" data-bind="profile.sim.propertyHI" data-num="man" value="${(+sim.propertyHI||0)/1e4}"></label></div>
+    <p class="note">재산분은 건강보험공단 '지역보험료 모의계산'에 집 과세표준을 넣어 나온 재산 보험료를 적으세요. 공적연금은 절반, 일반자산 배당·이자는 연 1,000만원을 넘으면 전액 부과되고, 연금저축·IRP·ISA는 부과되지 않습니다.</p>
     <p class="note">금액은 모두 현재가치, 계산할 때 물가를 반영합니다. 공적연금은 ⋮ › 설정에서 입력합니다.</p>`;
   const step1 = `<div class="card"><div class="step"><span class="no">1</span><b style="flex:1">은퇴 조건</b><button class="btn sm ghost" data-act="toggleCond">${ui.editCond?'닫기':'수정'}</button></div>
     <div style="margin-top:8px">${ui.editCond ? condEdit : condSummary}</div></div>
@@ -1038,20 +1090,21 @@ function renderDraw(){
   return step1 + `
     <div class="card"><div class="step"><span class="no">2</span><b>전략 비교</b></div>
       <div class="strat" style="margin-top:10px">${cards}</div>
-      ${diff>1e6?`<p class="note" style="margin-top:8px">추천 전략이 가장 불리한 전략보다 세금 <b>${eok(diff)}</b> 적습니다.</p>`:''}</div>
+      ${diff>1e6?`<p class="note" style="margin-top:8px">추천 전략이 가장 불리한 전략보다 세금 <b>${eok(diff)}</b> 적습니다.</p>`:''}
+      ${sel.totalHI>0?(()=>{ const f = sel.rows.find(x=>x.hi>0); return `<p class="note" style="margin-top:4px">지역 건보료(추정): 첫해 월 <b>${man(f.hi/12)}</b> · 평생 ${eok(sel.totalHI)}${f.hiFin>E.RULES.hiFinThreshold?` — 일반자산 배당·이자 연 ${man(f.hiFin)}가 1,000만원을 넘어 전액 부과됩니다`:''}</p>`; })():''}</div>
     ${fold('planDetail', '<span class="no" style="width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:12px;display:inline-flex;align-items:center;justify-content:center">3</span> 상세 결과', detail, '그래프 · 연도별 표')}`;
 }
 function yearTable(r){
   const accs = S.accounts.filter(a=>!a.closed);
   if(r.rows.some(x=>x.draws && x.draws.__cash)) accs.push({ id:'__cash', name:'일반자산' });
   const rows = r.rows.filter(x => x.year >= +S.profile.sim.startYear || x.notes.length || x.year===THIS_YEAR+1);
-  const head = `<tr><th>연도</th><th>나이</th><th>필요액</th><th>공적연금</th>${accs.map(a=>`<th>${esc(a.name)}</th>`).join('')}<th>세금</th><th>부족</th><th>잔액</th></tr>`;
+  const head = `<tr><th>연도</th><th>나이</th><th>필요액</th><th>공적연금</th>${accs.map(a=>`<th>${esc(a.name)}</th>`).join('')}<th>세금</th><th>건보료</th><th>부족</th><th>잔액</th></tr>`;
   const body = rows.map(x => {
     const ages = S.profile.members.map(m=>x.ages[m.id]).join('/');
     return `<tr><td>${x.year}</td><td>${ages}</td><td>${x.need?man(x.need):'적립'}</td><td>${x.publicGross?man(x.publicGross):''}</td>
       ${accs.map(a=>`<td>${x.draws[a.id]?man(x.draws[a.id]):''}</td>`).join('')}
-      <td>${x.tax?man(x.tax):''}</td><td class="${x.short>1?'neg':''}">${x.short>1?man(x.short):''}</td><td>${eok(x.balance)}</td></tr>`
-      + (x.notes.length?`<tr><td></td><td colspan="${accs.length+6}" style="text-align:left;color:var(--muted)">${esc(x.notes.join(' · '))}</td></tr>`:'');
+      <td>${x.tax?man(x.tax):''}</td><td>${x.hi?man(x.hi):''}</td><td class="${x.short>1?'neg':''}">${x.short>1?man(x.short):''}</td><td>${eok(x.balance)}</td></tr>`
+      + (x.notes.length?`<tr><td></td> <td colspan="${accs.length+7}" style="text-align:left;color:var(--muted)">${esc(x.notes.join(' · '))}</td></tr>`:'');
   }).join('');
   return `<div class="scroll"><table class="t">${head}${body}</table></div>`;
 }
@@ -1250,7 +1303,7 @@ function cfRetireYear(D, who){
 function cfNick(D, key){ const m = (D.members || []).find(x => x.name === key); return m && m.nick ? m.nick : key; }
 
 // 캐시플로우 데이터 → 반영할 항목 목록
-function cfBuild(D){
+function cfBuild(D, RB){
   const out = { members:[], publicPensions:[], incomes:[], lumps:[], spend:null, assets:[] };
   ['본인','아내'].forEach((key, i) => {
     const rel = i === 0 ? '본인' : '배우자';
@@ -1259,14 +1312,14 @@ function cfBuild(D){
   });
   for(const x of (D.incomes || [])){
     const mid = cfOwnerToMember(x.owner);
-    if(/연금/.test(x.name || '') && (x.owner === '본인' || x.owner === '아내') && x.start){
+    if(/연금/.test(x.name || '') && !/국민연금/.test(x.name || '') && (x.owner === '본인' || x.owner === '아내') && x.start){   // 국민연금은 기간 수입(종류: 국민연금)으로
       out.publicPensions.push({ cfId:x.id, memberId:mid, idx:x.owner==='본인'?0:1, name:`${x.name} (${cfNick(D, x.owner)})`, monthly:Math.round(cfNum(x.monthly)*1e4), startYear:cfYear(x.start) });
       continue;
     }
     let monthly = cfNum(x.monthly), note = '';
     if(x.kind === 'salary'){ const l = cfSalaryMonthly(D, x.owner); if(l){ monthly = l.monthly; note = `급여 장부 ${l.year}년 월평균`; } }
     const endYear = x.end ? cfYear(x.end) : (x.kind === 'salary' ? cfRetireYear(D, x.owner) : null);
-    out.incomes.push({ cfId:x.id, name:(x.name || '소득') + (x.owner ? ` (${cfNick(D, x.owner)})` : ''), monthly:Math.round(monthly*1e4),
+    out.incomes.push({ cfId:x.id, owner:cfOwnerToMember(x.owner), name:(x.name || '소득') + (x.owner ? ` (${cfNick(D, x.owner)})` : ''), monthly:Math.round(monthly*1e4),
       startYear:cfYear(x.start), endYear, note });
   }
   for(const l of (D.lumps || [])){
@@ -1284,7 +1337,19 @@ function cfBuild(D){
   }
   for(const a of (D.assets || [])){
     if(CF_FIN.indexOf(a.cat) < 0) continue;
-    out.assets.push({ cfId:a.id, name:a.name + (a.owner && a.owner !== '공동' ? ` (${cfNick(D, a.owner)})` : ''), cat:a.cat, acct:a.acct, rawName:a.name, value:Math.round(cfNum(a.value)*1e4), owner:a.owner, src:a.src || '' });
+    // 명의가 비었거나 '공동'이면 이름에 든 별명(혜진 등)이나 '아내'·'본인'으로 추정
+    let owner = a.owner, ownerGuessed = false;
+    if(!owner || owner === '공동'){
+      for(const key of ['아내','본인']){ const nick = cfNick(D, key); if((nick && nick !== key && a.name.indexOf(nick) >= 0) || a.name.indexOf(key) >= 0){ owner = key; ownerGuessed = true; break; } }
+    }
+    // 리밸런서 납입원금: 캐시플로우의 리밸런서 연결(rbMap)로 이 자산에 묶인 계좌들의 원금 합계
+    let principal = 0;
+    if(RB && RB.accounts) for(const [rbName, cfId] of Object.entries(D.rbMap || {})){
+      if(cfId !== a.id) continue;
+      const ra = RB.accounts.find(x => x.name === rbName); if(!ra || !(+ra.principal > 0)) continue;
+      principal += ra.market === 'US' ? +ra.principal * (RB.rate || 0) : +ra.principal;
+    }
+    out.assets.push({ cfId:a.id, name:a.name + (owner && owner !== '공동' ? ` (${cfNick(D, owner)})` : ''), cat:a.cat, acct:a.acct, rawName:a.name, value:Math.round(cfNum(a.value)*1e4), owner, ownerGuessed, principal:Math.round(principal), src:a.src || '' });
   }
   return out;
 }
@@ -1321,13 +1386,46 @@ function cfDefaultMaps(assets){
   }
   return out;
 }
+// 리밸런서(로그인한 사람 것) 계좌 목록 — 원금용. 없거나 실패하면 null
+async function rbFetch(){
+  try{
+    const r = await sb.from('rebalancer_data').select('accounts,history').eq('user_id', _user.id).maybeSingle();
+    if(r.error || !r.data) return null;
+    const h = r.data.history || {}, last = Object.keys(h).sort().pop();
+    return { accounts:r.data.accounts || [], rate: last && h[last].rate ? +h[last].rate : 0 };
+  }catch(e){ return null; }
+}
+// 연결된 계좌에 평가액·원금·명의 반영 (불러오기·자동 반영 공용)
+function cfApplyAccounts(items, map, date){
+  const sums = {}, prins = {}, owners = {}, msgs = [];
+  items.forEach(a => { const v = map[a.cfId]; if(!v) return; sums[v] = (sums[v]||0) + a.value; prins[v] = (prins[v]||0) + (a.principal||0);
+    if(a.owner === '본인' || a.owner === '아내') (owners[v] = owners[v] || new Set()).add(a.owner); });
+  for(const [id, v] of Object.entries(sums)){
+    const acc = id === 'general' ? S.accounts.find(a => a.cfGeneral) : S.accounts.find(a => a.id === id);
+    if(!acc) continue;
+    if(acc.reportedValue !== v){
+      msgs.push(`${acc.name} ${man(acc.reportedValue||0)}→${man(v)}`);
+      acc.reportedValue = v; acc.valueDate = date; acc.valueSrc = 'cf';
+      acc.history = (acc.history || []).filter(h => h.date !== date); acc.history.push({ date, value:v });
+    }
+    if(prins[id] > 0) acc.principalRB = prins[id];
+    // 명의: 직접 고친 계좌는 건드리지 않음, 연결된 자산의 명의가 하나로 정해질 때만
+    const os = owners[id];
+    if(id !== 'general' && acc.ownerSrc !== 'manual' && os && os.size === 1){
+      const mid = cfOwnerToMember([...os][0]);
+      if(mid && acc.owner !== mid){ msgs.push(`${acc.name} 명의 → ${memberById(mid).name}`); acc.owner = mid; }
+    }
+  }
+  return { sums, msgs };
+}
 async function cfOpen(){
   if(!sb || !_user){ toast('먼저 로그인하세요'); return; }
   toast('캐시플로우 읽는 중…');
   const r = await sb.from('cashflow_data').select('data,updated_at').eq('household','home').maybeSingle();
   if(r.error){ toast('읽기 실패: ' + r.error.message); return; }
   if(!r.data){ toast('캐시플로우 장부가 없습니다'); return; }
-  CF = { at:r.data.updated_at, items:cfBuild(r.data.data || {}) };
+  const RB = await rbFetch();
+  CF = { at:r.data.updated_at, items:cfBuild(r.data.data || {}, RB) };
   openSheet(cfPreview());
 }
 function cfPreview(){
@@ -1361,7 +1459,10 @@ function cfApply(){
   if(on('members')) it.members.forEach(m => { if(ms[m.idx]){ ms[m.idx].birthYear = m.birthYear; if(/^(본인|배우자)$/.test(ms[m.idx].name)) ms[m.idx].name = m.name; } });
   if(on('pub')) it.publicPensions.forEach(p => { const m = ms[p.idx]; if(m){ m.publicPension = Object.assign({ taxableRatio:80 }, m.publicPension, { monthly:p.monthly, startYear:p.startYear, src:'cf' }); } });
   if(on('inc')){
-    sim.incomes = (sim.incomes || []).filter(x => x.src !== 'cf').concat(it.incomes.map(x => ({ id:uid('i'), src:'cf', cfId:x.cfId, name:x.name, monthly:x.monthly, startYear:x.startYear, endYear:x.endYear })));
+    const prevInc = Object.fromEntries((sim.incomes || []).filter(x => x.src === 'cf').map(x => [x.cfId, x]));
+    sim.incomes = (sim.incomes || []).filter(x => x.src !== 'cf').concat(it.incomes.map(x => { const p = prevInc[x.cfId] || {};
+      return { id:p.id || uid('i'), src:'cf', cfId:x.cfId, name:x.name, monthly:x.monthly, startYear:x.startYear, endYear:x.endYear,
+        kind: p.kind != null ? p.kind : (/국민연금/.test(x.name) ? 'nps' : /월세|임대|사업/.test(x.name) ? 'rent' : ''), owner: p.owner || x.owner }; }));
     if(sim.otherMonthly && confirm('기타 월수입(월세 등)을 직접 입력해 두셨습니다. 캐시플로우 수입과 겹치면 두 번 계산됩니다.\n기타 월수입을 0으로 바꿀까요?')) sim.otherMonthly = 0;
   }
   if(on('lump')){
@@ -1376,25 +1477,21 @@ function cfApply(){
     sim.spendPhases = it.spend.phases; sim.spendSrc = 'cf';
   }
   if(on('assets')){
-    const sums = {}; const date = localDay();
+    const date = localDay();
     let made = 0;
     it.assets.forEach((a,i) => {
       let v = val('cfm_'+i);
       if(v.startsWith('new:')){
-        const acc = { id:uid('a'), type:v.slice(4), owner:cfOwnerToMember(a.owner), name:a.rawName, institution:'', openedAt:'', history:[], plannedAnnual:0, isaKind:'normal' };
+        const acc = { id:uid('a'), type:v.slice(4), owner:cfOwnerToMember(a.owner), ownerSrc:'cf', name:a.rawName, institution:'', openedAt:'', history:[], plannedAnnual:0, isaKind:'normal' };
         S.accounts.push(acc); v = acc.id; made++;
       }
-      S.cf.map[a.cfId] = v; if(v) sums[v] = (sums[v]||0) + a.value;
+      S.cf.map[a.cfId] = v;
     });
+    if(it.assets.some(a => S.cf.map[a.cfId] === 'general') && !S.accounts.find(a => a.cfGeneral))
+      S.accounts.push({ id:uid('a'), type:'general', owner:ms[0].id, name:'일반자산 (캐시플로우)', institution:'', history:[], cfGeneral:true });
+    const res = cfApplyAccounts(it.assets, S.cf.map, date);
+    const g = S.accounts.find(a => a.cfGeneral); if(g && !res.sums.general){ g.reportedValue = 0; }
     if(made) setTimeout(() => toast(`계좌 ${made}개를 만들었습니다. 계좌 탭에서 개설일과 납입 내역을 입력하세요`), 1900);
-    for(const [id, v] of Object.entries(sums)){
-      let acc = id === 'general' ? S.accounts.find(a => a.cfGeneral) : S.accounts.find(a => a.id === id);
-      if(!acc && id === 'general'){ acc = { id:uid('a'), type:'general', owner:ms[0].id, name:'일반자산 (캐시플로우)', institution:'', history:[], cfGeneral:true }; S.accounts.push(acc); }
-      if(!acc) continue;
-      acc.reportedValue = v; acc.valueDate = date; acc.valueSrc = 'cf';
-      acc.history = (acc.history || []).filter(h => h.date !== date); acc.history.push({ date, value:v });
-    }
-    const g = S.accounts.find(a => a.cfGeneral); if(g && !sums.general){ g.reportedValue = 0; }
   }
   S.cf.importedAt = new Date().toISOString();
   save(); closeSheet(); toast('캐시플로우 내용을 반영했습니다'); render();
@@ -1410,17 +1507,13 @@ async function cfAuto(){
   try{
     const r = await sb.from('cashflow_data').select('data,updated_at').eq('household','home').maybeSingle();
     if(r.error || !r.data) return;
-    const items = cfBuild(r.data.data || {}).assets;
-    const sums = {}; let unmapped = 0;
-    items.forEach(a => { if(!(a.cfId in S.cf.map)){ unmapped++; return; } const v = S.cf.map[a.cfId]; if(v) sums[v] = (sums[v]||0) + a.value; });
-    const date = localDay(), msgs = [];
-    for(const [id, v] of Object.entries(sums)){
-      const acc = id === 'general' ? S.accounts.find(a => a.cfGeneral) : S.accounts.find(a => a.id === id);
-      if(!acc || acc.reportedValue === v) continue;
-      msgs.push(`${acc.name} ${man(acc.reportedValue||0)}→${man(v)}`);
-      acc.reportedValue = v; acc.valueDate = date; acc.valueSrc = 'cf';
-      acc.history = (acc.history || []).filter(h => h.date !== date); acc.history.push({ date, value:v });
-    }
+    const RB = await rbFetch();
+    const items = cfBuild(r.data.data || {}, RB).assets;
+    const unmapped = items.filter(a => !(a.cfId in S.cf.map)).length;
+    const before = JSON.stringify(S.accounts.map(a => [a.principalRB, a.owner]));
+    const { msgs } = cfApplyAccounts(items, S.cf.map, localDay());
+    const quiet = JSON.stringify(S.accounts.map(a => [a.principalRB, a.owner])) !== before && !msgs.length;
+    if(quiet){ save(); render(); }
     if(msgs.length){ S.cf.autoAt = new Date().toISOString(); save(); render(); toast('캐시플로우 변경 반영: ' + msgs.join(', ')); }
     else if(unmapped) toast(`캐시플로우에 연결 안 된 자산 ${unmapped}개 — 설정 › 캐시플로우에서 불러오기`);
   }catch(e){ console.warn('캐시플로우 자동 반영 실패', e); }
@@ -1432,7 +1525,7 @@ function planCard(){
   const tag = x => x.src === 'cf' ? '<span class="badge cf">캐시플로우</span>' : '';
   const accName = id => { const a = S.accounts.find(x=>x.id===id); return a ? a.name : '일반자산'; };
   return `<div class="card"><h2>기간 수입<span class="sp"></span><button class="btn sm ghost" data-act="editInc">+ 추가</button></h2>
-      ${inc.map(x=>`<div class="dep" data-act="editInc" data-id="${x.id}"><span class="d1">${tag(x)} ${esc(x.name)} <span class="meta">${x.startYear||'지금'}~${x.endYear||''}</span></span><b>월 ${man(x.monthly)}</b></div>`).join('') || '<div class="meta">은퇴 후 들어오는 급여·월세 등 (공적연금 제외)</div>'}
+      ${inc.map(x=>`<div class="dep" data-act="editInc" data-id="${x.id}"><span class="d1">${tag(x)}${x.kind?` <span class="badge ${x.kind==='nps'?'irp':'general'}">${x.kind==='nps'?'국민연금':'임대'}</span>`:''} ${esc(x.name)} <span class="meta">${x.startYear||'지금'}~${x.endYear||''}</span></span><b>월 ${man(x.monthly)}</b></div>`).join('') || '<div class="meta">은퇴 후 들어오는 급여·월세 등 (공적연금 제외)</div>'}
       ${inc.some(x=>x.src==='cf')?cfLink('money'):''}</div>
     <div class="card"><h2>목돈 일정<span class="sp"></span><button class="btn sm ghost" data-act="editLump">+ 추가</button></h2>
       ${lumps.map(x=>`<div class="dep" data-act="editLump" data-id="${x.id}"><span class="d1">${tag(x)} ${esc(x.name)} <span class="meta">${esc(x.month||'')}${x.repeat?' 매년':''}${x.amount>0?' → '+esc(accName(x.to)):''}</span></span><b class="${x.amount<0?'neg':'pos'}">${man(x.amount,true)}</b></div>`).join('') || '<div class="meta">퇴직수당·매각대금(+), 결혼자금·병원비(−)</div>'}
@@ -1440,7 +1533,15 @@ function planCard(){
     <div class="card"><h2>생활비 구간<span class="sp"></span><button class="btn sm ghost" data-act="editPhase">+ 추가</button></h2>
       <div class="row"><span class="k">기본 (${sim.startYear}년~)</span><span class="v">월 ${man(sim.monthlyNeed)}</span></div>
       ${ph.map((p,i)=>`<div class="dep" data-act="editPhase" data-i="${(sim.spendPhases||[]).indexOf(p)}"><span class="d1">${p.fromYear}년부터</span><b>월 ${man(p.monthly)}</b></div>`).join('')}
-      ${sim.spendSrc==='cf'?cfLink('sim'):''}</div>`;
+      ${sim.spendSrc==='cf'?cfLink('sim'):''}</div>
+    ${extraDepositCard()}`;
+}
+// 퇴직 전후 연금계좌 추가 납입 (일반자산 → 연금계좌, 비공제 원금)
+function extraDepositCard(){
+  const xd = S.profile.sim.extraDeposit || {}, to = S.accounts.find(a=>a.id===xd.to);
+  return `<div class="card"><h2>연금계좌 추가 납입<span class="sp"></span><button class="btn sm ghost" data-act="editExtra">${xd.on?'수정':'설정'}</button></h2>
+    ${xd.on && to ? `<div class="row"><span class="k">${xd.startYear}년부터 ${xd.years}년간 → ${esc(to.name)}</span><span class="v">연 ${man(xd.amount)}</span></div>`
+      : '<div class="meta">퇴직한 해와 다음 해에 일반자산을 연금계좌로 옮겨(연 1,800만원 한도) 세금 없이 꺼낼 수 있는 원금으로 만들고, 금융소득 건보료를 줄입니다.</div>'}</div>`;
 }
 function formSheet(title, body, actSave, id, canDel){
   return `<div class="sheet-bg" data-act="closeSheetBg"><div class="sheet"><div class="hd"><h3>${title}</h3><button class="x" data-act="closeSheet">✕</button></div>
@@ -1461,7 +1562,9 @@ const PLAN_ACTIONS = {
     openSheet(formSheet(x.id?'기간 수입 수정':'기간 수입 추가', `
       ${x.src==='cf'?'<p class="note">캐시플로우에서 불러온 항목입니다. 다시 불러오면 덮어씁니다.</p>':''}
       <label class="f"><span>이름</span><input id="pName" value="${esc(x.name||'')}" placeholder="예: 아내 급여, 월세"></label>
-      <label class="f"><span>월 금액(만원, 실수령·현재가치)</span><input id="pMon" inputmode="decimal" value="${x.monthly?x.monthly/1e4:''}"></label>
+      <div class="fr"><label class="f"><span>종류</span><select id="pKind">${Object.entries(INC_KINDS).map(([k,l])=>`<option value="${k}" ${(x.kind||'')===k?'selected':''}>${l}</option>`).join('')}</select></label>
+        <label class="f"><span>받는 사람</span><select id="pOwner">${S.profile.members.map(m=>`<option value="${m.id}" ${x.owner===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select></label></div>
+      <label class="f"><span>월 금액(만원, 현재가치)</span><input id="pMon" inputmode="decimal" value="${x.monthly?x.monthly/1e4:''}"><div class="hint">국민연금은 세전 예상액, 그 외는 실수령액. 국민연금·임대소득은 세금·건보료 계산에 반영됩니다.</div></label>
       <div class="fr"><label class="f"><span>시작 연도</span><input id="pFrom" inputmode="numeric" value="${x.startYear||''}" placeholder="비우면 지금"></label>
         <label class="f"><span>끝 연도</span><input id="pTo" inputmode="numeric" value="${x.endYear||''}" placeholder="비우면 계속"></label></div>`, 'saveInc', x.id, !!x.id));
   },
@@ -1471,8 +1574,26 @@ const PLAN_ACTIONS = {
     else{
       const m = manVal('pMon'); if(!m){ toast('금액을 입력하세요'); return; }
       let x = sim.incomes.find(i=>i.id===d.id); if(!x){ x = { id:uid('i') }; sim.incomes.push(x); }
-      Object.assign(x, { name:val('pName').trim()||'수입', monthly:m, startYear:parseInt(val('pFrom'))||null, endYear:parseInt(val('pTo'))||null });
+      Object.assign(x, { name:val('pName').trim()||'수입', kind:val('pKind'), owner:val('pOwner'), monthly:m, startYear:parseInt(val('pFrom'))||null, endYear:parseInt(val('pTo'))||null });
     }
+    save(); closeSheet(); render();
+  },
+  editExtra(){
+    const xd = S.profile.sim.extraDeposit || {}, sim = S.profile.sim;
+    const opts = S.accounts.filter(a=>!a.closed && E.isPension(a)).map(a=>`<option value="${a.id}" ${xd.to===a.id?'selected':''}>${esc(a.name)} (${TYPES[a.type]}·${esc(memberById(a.owner).name)})</option>`).join('');
+    if(!opts){ toast('연금저축이나 IRP 계좌를 먼저 등록하세요'); return; }
+    openSheet(formSheet('연금계좌 추가 납입', `
+      <label class="f" style="display:flex;gap:8px;align-items:center"><input id="xOn" type="checkbox" ${xd.on!==false?'checked':''}><span style="margin:0;font-size:14px;color:var(--text)">계산에 반영</span></label>
+      <label class="f"><span>넣을 계좌</span><select id="xTo">${opts}</select></label>
+      <div class="fr"><label class="f"><span>시작 연도</span><input id="xFrom" inputmode="numeric" value="${xd.startYear || (+sim.startYear-1)}"></label>
+        <label class="f"><span>기간(년)</span><input id="xYears" inputmode="numeric" value="${xd.years || 2}"></label></div>
+      <label class="f"><span>연 금액(만원, 최대 1,800)</span><input id="xAmt" inputmode="decimal" value="${(xd.amount||18000000)/1e4}"></label>
+      <p class="note">일반자산에서 꺼내 넣는다고 계산합니다. 은퇴 전 해에는 '연 납입 계획'과 합쳐 1,800만원을 넘지 않게 자동으로 줄입니다. 소득이 없는 해에 넣은 돈은 세액공제는 없지만, 나중에 세금 없이 꺼낼 수 있습니다.</p>`, 'saveExtra', 'x', !!xd.to));
+  },
+  saveExtra(d){
+    const sim = S.profile.sim;
+    if(d.del){ delete sim.extraDeposit; }
+    else sim.extraDeposit = { on:$('#xOn').checked, to:val('xTo'), startYear:parseInt(val('xFrom'))||(+sim.startYear-1), years:Math.max(1,parseInt(val('xYears'))||1), amount:Math.min(18000000, manVal('xAmt')||0) };
     save(); closeSheet(); render();
   },
   editLump(d){
@@ -1528,6 +1649,7 @@ const ACTIONS = {
     const name = val('fName').trim(); if(!name){ toast('계좌 이름을 입력하세요'); return; }
     let a = d.id ? S.accounts.find(x=>x.id===d.id) : null;
     if(!a){ a = { id:uid('a'), history:[] }; S.accounts.push(a); }
+    if(a.owner && a.owner !== val('fOwner')) a.ownerSrc = 'manual';
     Object.assign(a, { type:val('fType'), owner:val('fOwner'), name, institution:val('fInst').trim(), openedAt:val('fOpened'),
       plannedAnnual: manVal('fPlanned')||0, isaKind:val('fIsaKind'), isaMaturity:val('fMat'), isaToPension:val('fToP'),
       retireTaxRate: parseFloat(val('fRet'))||0, riskyPct: parseFloat(val('fRisky'))||0, lifelong: !!($('#fLifelong')&&$('#fLifelong').checked) });
@@ -1580,6 +1702,8 @@ function sampleState(){
 }
 
 Object.assign(ACTIONS, PLAN_ACTIONS);
+// 홈 화면 앱 설치용 서비스 워커 (캐시 없음 — 항상 최신 화면)
+if('serviceWorker' in navigator && window.isSecureContext && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(e => console.warn('서비스 워커 등록 실패', e));
 render();
 setCloud('off');
 if(sb){
