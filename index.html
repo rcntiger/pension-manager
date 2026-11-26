@@ -174,7 +174,7 @@ details.fold>.body>.card{margin:8px 0;border-color:var(--line)}
   nav.tabs button.on{background:var(--accent-soft)}
   nav.tabs::before{content:'연금·절세 통합관리';position:absolute;top:26px;left:26px;font-weight:700;font-size:calc(16px * var(--fs));color:var(--text)}
   header{max-width:1280px;padding:18px 28px 10px}
-  header h1{font-size:0;flex:1} header h1 .cloud{font-size:calc(14px * var(--fs))}
+  header h1{flex:1} header h1 .cloud{font-size:calc(14px * var(--fs))}
   main{max-width:1280px;padding:4px 28px 40px}
   .accgrid{grid-template-columns:repeat(3,minmax(0,1fr))}
   .cols{grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:0 20px}
@@ -191,7 +191,26 @@ header h1{display:flex;flex-direction:column;min-width:0;font-size:min(calc(17px
 header h1 .ttl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kpi .big{font-size:min(calc(21px * var(--fs)), 5.6vw);white-space:nowrap}
 .hero .num{font-size:min(calc(28px * var(--fs)), 9vw)}
-@media (min-width:1200px){ .hero .num{font-size:calc(36px * var(--fs))} .kpi .big{font-size:calc(22px * var(--fs))} }
+@media (min-width:1200px){ .hero .num{font-size:calc(36px * var(--fs))} .kpi .big{font-size:calc(24px * var(--fs))} }
+table.tlist{width:100%} table.tlist tr.click{cursor:pointer} table.tlist tr.click:hover td{background:var(--surface-2)}
+table.tlist tr.sel td{background:var(--accent-soft)}
+table.tlist tr.grp td{background:var(--surface-2);padding-top:9px}
+table.tlist tr.sub td{font-weight:700;border-bottom:2px solid var(--line)} table.tlist tr.tot td{font-size:calc(16px * var(--fs))}
+.strat .best,table.t .best{font-size:calc(12px * var(--fs));background:var(--good);color:#fff;padding:1px 6px;border-radius:5px}
+@media (min-width:1200px){
+  header{max-width:1500px;padding:18px 32px 12px}
+  header h1{font-size:calc(22px * var(--fs))!important}
+  main{max-width:1500px;padding:6px 32px 48px}
+  nav.tabs{width:230px;background:var(--surface)} body{padding-left:230px}
+  nav.tabs button{min-height:46px}
+  nav.tabs button[data-tab=set]{margin-top:auto}
+  .kpi.kpi4{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:4px}
+  .kpi .k1{padding:16px 18px}
+  .card{padding:18px 20px}
+  .cols{gap:0 18px}
+  .cols.plan{grid-template-columns:minmax(0,9fr) minmax(0,11fr);gap:0 22px}
+  .sheet{max-width:560px}
+}
 .fsseg{display:flex;gap:6px}
 .fsseg button{flex:1;border:1px solid var(--line);background:var(--surface);color:var(--text);border-radius:9px;padding:8px 0;font:inherit;cursor:pointer}
 .fsseg button.on{border-color:var(--accent);color:var(--accent);font-weight:700}
@@ -869,12 +888,15 @@ const ICONS = {
 };
 const TABS = [['home','홈','home'],['acc','계좌','acc'],['tax','절세','tax'],['plan','은퇴설계','draw']];   // 설정은 ⋮ 메뉴
 function renderNav(){
-  $('#tabs').innerHTML = TABS.map(([k,l,i]) => `<button data-tab="${k}" class="${ui.tab===k?'on':''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[i]}</svg>${l}</button>`).join('');
+  const navTabs = isWide() ? TABS.concat([['set','설정','set']]) : TABS;
+  $('#tabs').innerHTML = navTabs.map(([k,l,i]) => `<button data-tab="${k}" class="${ui.tab===k?'on':''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[i]}</svg>${l}</button>`).join('');
   const opts = [['all','전체'], ...S.profile.members.map(m=>[m.id, m.name])];
   $('#ownerSeg').innerHTML = opts.map(([k,l]) => `<button data-owner="${k}" class="${ui.owner===k?'on':''}">${esc(l)}</button>`).join('');
 }
+const PAGE_TITLES = { home:'대시보드', acc:'계좌 관리', tax:'절세 분석', plan:'은퇴 설계', set:'설정' };
 function render(){
   renderNav();
+  const ttl = document.querySelector('header .ttl'); if(ttl) ttl.textContent = isWide() ? (PAGE_TITLES[ui.tab] || '') : '연금·절세 통합관리';
   const f = { home:renderHome, acc:renderAccounts, tax:renderTax, plan:renderDraw, set:renderSettings }[ui.tab] || renderHome;
   $('#main').innerHTML = f();
   if(ui.tab==='plan') bindChart();
@@ -910,6 +932,7 @@ function refundSummary(year){
   return { refund, remain, remainRefund, paidP, paidI, credited, ms, cls };
 }
 function renderHome(){
+  if(isWide() && S.accounts.length) return renderHomeWide();
   const accs = visibleAccounts();
   if(!S.accounts.length) return `<div class="card"><h2>시작하기</h2>
     <p class="note" style="font-size:calc(15px * var(--fs))">연금저축·IRP·ISA 계좌를 등록하고 납입 내역과 평가액을 입력하면, 세액공제와 은퇴 후 인출 전략을 계산해 드립니다.</p>
@@ -951,6 +974,61 @@ function rankSims(a,b){ // 고갈이 늦을수록, 같으면 세금 적을수록
   return a.totalTax-b.totalTax;
 }
 
+/* ---------- PC 대시보드: 지표 4개 → 구성·계좌 현황 → 알림·추천 전략 ---------- */
+function renderHomeWide(){
+  const accs = visibleAccounts();
+  let total=0, principal=0; const byType={};
+  for(const a of accs){ const v = posOf(a).value; total += v; principal += accPrincipal(a).v; byType[a.type] = (byType[a.type]||0) + v; }
+  const pnl = total - principal, pnlPct = principal > 0 ? pnl / principal * 100 : null;
+  const kinds = Object.keys(TYPES).filter(k=>byType[k] > 0);
+  const stack = kinds.map(k=>`<i style="width:${byType[k]/total*100}%;background:${TYPE_COLOR[k]}"></i>`).join('');
+  const leg = kinds.map(k=>`<span><i style="background:${TYPE_COLOR[k]}"></i>${TYPES[k]} ${Math.round(byType[k]/total*100)}%<b>${eok(byType[k])}</b></span>`).join('');
+  const r = refundSummary(THIS_YEAR);
+  const sims = E.compareStrategies(S, { baseYear:THIS_YEAR });
+  const best = sims.slice().sort(rankSims)[0], okRet = !best.depletedYear;
+  const al = E.alerts(S, THIS_YEAR).filter(x => x.level === 'warn');
+  const k = (lbl, big, sub, tab, cls) => `<div class="k1" ${tab?`data-tab="${tab}"`:''}><div class="lbl">${lbl}</div><div class="big ${cls||''}">${big}</div><div class="sub">${sub}</div></div>`;
+  const rows = accs.map(a => { const pos = posOf(a), ret = accReturn(a, pos);
+    return `<tr data-act="openAccount" data-id="${a.id}" class="click"><td><span class="badge ${a.type}">${TYPES[a.type]}</span> ${esc(a.name)}</td><td>${esc(memberById(a.owner).name)}</td><td>${eok(pos.value)}</td><td class="${ret==null?'':ret>=0?'pos':'neg'}">${ret==null?'–':(ret>=0?'+':'')+(ret*100).toFixed(1)+'%'}</td></tr>`; }).join('');
+  return `<div class="kpi kpi4">
+      ${k(`${ui.owner==='all'?'전체':esc(memberById(ui.owner).name)} 자산`, eok(total), principal?`납입원금 ${eok(principal)}`:'납입원금 미입력', 'acc')}
+      ${k('운용수익', principal?`${pnl>=0?'+':''}${eok(pnl)}`:'–', pnlPct!=null?`원금 대비 ${pnl>=0?'+':''}${pnlPct.toFixed(1)}%`:'원금을 입력하면 계산', 'acc', principal?(pnl>=0?'ok':'bad'):'')}
+      ${k('올해 예상 환급', man(r.refund), r.remain>0?`${man(r.remain)} 더 넣으면 +${man(r.remainRefund)}`:'공제 한도 다 채움 ✓', 'tax')}
+      ${k('은퇴 후 자산', okRet?`${S.profile.sim.endAge}세까지 ✓`:`${best.depletedYear}년 고갈`, okRet?`잔액 ${eok(best.endBalanceReal)} (현재가치)`:esc(ageStr(best.depletedYear)), 'plan', okRet?'ok':'bad')}
+    </div>
+    <div class="cols"><div class="card"><h2>자산 구성</h2>${total>0?`<div class="stack" style="height:16px">${stack}</div><div class="leg2" style="grid-template-columns:1fr">${leg}</div>`:'<div class="meta">평가액을 입력하세요</div>'}</div>
+      <div class="card"><h2>계좌별 현황<span class="sp"></span><span class="meta acc" data-tab="acc">전체 보기 ›</span></h2><table class="t tlist"><tr><th>계좌</th><th>명의</th><th>평가액</th><th>수익률</th></tr>${rows}</table></div></div>
+    <div class="cols"><div class="card"><h2>주요 알림</h2>${al.length?al.slice(0,5).map(x=>`<div class="alert warn"><b>!</b><span>${esc(x.text)}</span></div>`).join(''):'<div class="meta">조치가 필요한 알림이 없습니다 ✓</div>'}</div>
+      <div class="card acc" data-tab="plan"><h2>추천 인출 전략<span class="sp"></span><span class="meta">은퇴 설계 ›</span></h2>
+        <div style="font-size:calc(18px * var(--fs));font-weight:700">${E.STRATEGIES[best.strategy].label}</div>
+        <div class="meta" style="margin:4px 0 10px">${E.STRATEGIES[best.strategy].desc}</div>
+        <div class="grid2"><div class="tile"><div class="lbl">평생 세금(추정)</div><div class="v">${eok(best.totalTax)}</div></div>
+          <div class="tile"><div class="lbl">평생 건보료(추정)</div><div class="v">${best.totalHI?eok(best.totalHI):'–'}</div></div></div></div></div>`;
+}
+/* ---------- PC 계좌 관리: 종류별로 묶은 표 + 소계, 줄을 누르면 오른쪽 상세 ---------- */
+function renderAccountsWide(){
+  const accs = visibleAccounts();
+  if(!accs.length) return '<div class="empty">등록된 계좌가 없습니다</div><button class="btn block" data-act="newAccount">+ 계좌 추가</button>';
+  let body = '', gV = 0, gP = 0;
+  for(const t of Object.keys(TYPES)){
+    const list = accs.filter(a => a.type === t); if(!list.length) continue;
+    let sv = 0, sp = 0;
+    body += `<tr class="grp"><td colspan="7"><span class="badge ${t}">${TYPES[t]}</span> <span class="meta">${list.length}개</span></td></tr>`;
+    for(const a of list){
+      const pos = posOf(a), p = accPrincipal(a), ret = accReturn(a, pos); sv += pos.value; sp += p.v;
+      body += `<tr data-act="openAccount" data-id="${a.id}" class="click"><td>${esc(a.name)}</td><td>${esc(memberById(a.owner).name)}</td><td>${esc(a.institution||'')}</td>
+        <td>${eok(pos.value)}</td><td>${p.v?eok(p.v)+(p.src==='rb'?' <span class="meta">리밸런서</span>':''):'<span class="meta">미입력</span>'}</td>
+        <td class="${ret==null?'':ret>=0?'pos':'neg'}">${ret==null?'–':(ret>=0?'+':'')+(ret*100).toFixed(1)+'%'}</td><td class="meta">${esc(a.valueDate||'')}${a.valueSrc==='cf'?' · 캐시플로우':''}</td></tr>`;
+    }
+    gV += sv; gP += sp;
+    body += `<tr class="sub"><td colspan="3">${TYPES[t]} 소계</td><td>${eok(sv)}</td><td>${sp?eok(sp):''}</td><td class="${sp?(sv>=sp?'pos':'neg'):''}">${sp?((sv-sp)/sp*100>=0?'+':'')+((sv-sp)/sp*100).toFixed(1)+'%':''}</td><td></td></tr>`;
+  }
+  body += `<tr class="sub tot"><td colspan="3">합계</td><td>${eok(gV)}</td><td>${gP?eok(gP):''}</td><td class="${gP?(gV>=gP?'pos':'neg'):''}">${gP?((gV-gP)/gP*100>=0?'+':'')+((gV-gP)/gP*100).toFixed(1)+'%':''}</td><td></td></tr>`;
+  return `<div class="card"><div class="step" style="margin-bottom:6px"><b style="flex:1">계좌 ${accs.length}개</b><button class="btn sm" data-act="newAccount">+ 계좌 추가</button></div>
+    <table class="t tlist"><tr><th>계좌</th><th>명의</th><th>금융사</th><th>평가액</th><th>납입원금</th><th>수익률</th><th>평가 기준</th></tr>${body}</table>
+    <p class="note" style="margin-top:10px">줄을 누르면 오른쪽에 원금 구분·평가액·납입 내역이 열립니다. '리밸런서' 원금은 수익률 계산용이라, 세금 계산을 정확히 하려면 연도별 납입 내역을 넣어 주세요.</p></div>`;
+}
+
 /* ---------- 계좌: 목록은 요약만, 원금 구분·납입은 상세에서 ---------- */
 // 원금: 납입 내역 → 없으면 리밸런서 원금
 function accPrincipal(a){
@@ -959,6 +1037,7 @@ function accPrincipal(a){
 }
 function accReturn(a, pos){ const p = accPrincipal(a); return p.v > 0 ? (pos.value - p.v) / p.v : null; }
 function renderAccounts(){
+  if(isWide()) return renderAccountsWide();
   const accs = visibleAccounts();
   const cards = accs.map(a => {
     const pos = posOf(a), m = memberById(a.owner), ret = accReturn(a, pos);
@@ -1097,8 +1176,10 @@ function renderTax(){
         <div class="tile"><div class="lbl">세액공제 적용액</div><div class="v">${man(r.credited)}</div></div>
         <div class="tile"><div class="lbl">추가 납입 가능</div><div class="v">${man(r.remain)}</div></div></div>
       ${fillLine}</div>
-    ${fold('taxPeople', '사람별 상세', `<div class="grid-auto">${memberCards}</div>`)}
-    ${isaCards ? fold('taxIsa', 'ISA 절세 현황', `<div class="grid-auto">${isaCards}</div>`, isas.length+'개') : ''}
+    ${isWide() ? `<div class="step" style="margin:16px 2px 0"><b>사람별 공제 현황</b></div><div class="grid-auto">${memberCards}</div>`
+      : fold('taxPeople', '사람별 상세', `<div class="grid-auto">${memberCards}</div>`)}
+    ${isaCards ? (isWide() ? `<div class="step" style="margin:16px 2px 0"><b>ISA 절세 현황</b></div><div class="grid-auto">${isaCards}</div>`
+      : fold('taxIsa', 'ISA 절세 현황', `<div class="grid-auto">${isaCards}</div>`, isas.length+'개')) : ''}
     ${fold('taxRules', '절세 규칙 요약', rules)}`;
 }
 document.addEventListener('change', e => { if(e.target.id==='taxYear'){ ui.taxYear=+e.target.value; render(); } });
@@ -1146,7 +1227,9 @@ function renderDraw(){
       ${diff>1e6?`<p class="note" style="margin-top:8px">추천 전략이 가장 불리한 전략보다 세금 <b>${eok(diff)}</b> 적습니다.</p>`:''}
       ${sel.totalHI>0?(()=>{ const f = sel.rows.find(x=>x.hi>0); return `<p class="note" style="margin-top:4px">지역 건보료(추정): 첫해 월 <b>${man(f.hi/12)}</b> · 평생 ${eok(sel.totalHI)}${f.hiFin>E.RULES.hiFinThreshold?` — 일반자산 배당·이자 연 ${man(f.hiFin)}가 1,000만원을 넘어 전액 부과됩니다`:''}</p>`; })():''}</div>`;
   const no3 = '<span class="no">3</span>';
-  if(isWide()) return `<div class="cols plan"><div>${step1}${step2}</div><div>${chartCard}</div></div>
+  const cmp = `<div class="card"><h2>전략별 결과</h2><table class="t tlist"><tr><th>전략</th><th>평생 세금</th><th>평생 건보료</th><th>자산</th></tr>${ranked.map(r=>`<tr data-act="pickStrat" data-k="${r.strategy}" class="click ${ui.strat===r.strategy?'sel':''}"><td><span style="color:${SCOLOR[r.strategy]}">●</span> ${E.STRATEGIES[r.strategy].label}${r.strategy===bestKey?' <span class="best">추천</span>':''}</td><td>${eok(r.totalTax)}</td><td>${r.totalHI?eok(r.totalHI):'–'}</td><td class="${r.depletedYear?'bad':'ok'}">${r.depletedYear?`${r.depletedYear}년 고갈`:`${sim.endAge}세 ${eok(r.endBalanceReal)}`}</td></tr>`).join('')}</table>
+    <p class="note" style="margin-top:8px">줄을 누르면 아래 연도별 표가 그 전략으로 바뀝니다. 자산은 현재가치 기준입니다.</p></div>`;
+  if(isWide()) return `<div class="cols plan"><div>${step1}${step2}</div><div>${chartCard}${cmp}</div></div>
     <div class="step" style="margin:16px 2px 0">${no3}<b>연도별 인출 계획</b></div>${tableCard}`;
   return step1 + step2 + fold('planDetail', `${no3} 상세 결과`, chartCard + tableCard, '그래프 · 연도별 표');
 }
