@@ -108,7 +108,7 @@ table.t th{color:var(--text-2);font-weight:600;font-size:12px}
 .dep{display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}
 .dep .d1{flex:1}
 .x{border:0;background:none;color:var(--muted);font-size:18px;cursor:pointer;padding:0 4px}
-.toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);background:#222;color:#fff;padding:8px 14px;border-radius:10px;font-size:14px;z-index:40;opacity:0;transition:opacity .2s}
+.toast{pointer-events:none;position:fixed;left:50%;bottom:84px;transform:translateX(-50%);background:#222;color:#fff;padding:8px 14px;border-radius:10px;font-size:14px;z-index:40;opacity:0;transition:opacity .2s}
 .toast.on{opacity:.95}
 .note{font-size:12px;color:var(--muted);line-height:1.5}
 .cloud{font-size:11px;color:var(--muted);white-space:nowrap}
@@ -120,6 +120,33 @@ label.ck{font-size:13px;font-weight:500;display:inline-flex;gap:4px;align-items:
 .badge.cf{background:#fdeee6;color:#b94a17}
 @media (prefers-color-scheme: dark){.badge.cf{background:#3a2216;color:#f39a6b}}
 .dep[data-act]{cursor:pointer}
+details.fold{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);margin:10px 0}
+details.fold>summary{list-style:none;cursor:pointer;padding:13px 16px;font-weight:700;display:flex;align-items:center;gap:8px}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary::after{content:'›';margin-left:auto;color:var(--muted);font-size:18px;transition:transform .15s}
+details.fold[open]>summary::after{transform:rotate(90deg)}
+details.fold>summary .meta{font-weight:400}
+details.fold>.body{padding:0 16px 14px}
+details.fold>.body>.card{margin:8px 0;border-color:var(--line)}
+.kpi{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.kpi .k1{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;cursor:pointer}
+.kpi .lbl{font-size:12px;color:var(--text-2)}
+.kpi .big{font-size:21px;font-weight:700;letter-spacing:-.3px;font-variant-numeric:tabular-nums;margin:2px 0}
+.kpi .sub{font-size:12px;color:var(--muted)}
+.ok{color:var(--good)} .bad{color:var(--p-loss)}
+.stack{display:flex;height:12px;border-radius:6px;overflow:hidden;gap:2px;margin:12px 0 8px}
+.stack i{display:block;height:100%}
+.leg2{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:13px}
+.leg2 span{display:flex;align-items:center;gap:6px;color:var(--text-2)}
+.leg2 b{margin-left:auto;color:var(--text);font-variant-numeric:tabular-nums}
+.leg2 i{width:9px;height:9px;border-radius:3px;flex:none}
+.step{display:flex;align-items:center;gap:8px}
+.step .no{width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.cond{font-size:14px;color:var(--text-2);line-height:1.6}
+.cond b{color:var(--text)}
+.more{font-size:13px;color:var(--muted);text-align:center;padding:4px 0}
+.menuitem{display:flex;align-items:center;gap:10px;width:100%;text-align:left;font:inherit;color:var(--text)}
+.ret{font-size:13px;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -701,7 +728,8 @@ function defaultState(){
 }
 let S = load();
 let ui = { tab:'home', owner:'all', strat:'cap1500', taxYear:THIS_YEAR };
-{ const h = (location.hash || '').slice(1); if(['home','acc','tax','draw','set'].includes(h)) ui.tab = h; }   // 다른 앱에서 #탭 으로 바로 열기
+{ let h = (location.hash || '').slice(1); if(h === 'draw') h = 'plan'; if(['home','acc','tax','plan','set'].includes(h)) ui.tab = h; }
+ui.open = {};   // 펼친 접기 영역 기억   // 다른 앱에서 #탭 으로 바로 열기
 
 function load(){
   try{ const raw = localStorage.getItem(KEY); if(raw){ const s = JSON.parse(raw); return migrate(s); } }catch(e){}
@@ -743,7 +771,7 @@ const ICONS = {
   draw:'<path d="M4 19V5M4 19h16M8 15l4-4 3 3 5-6"/>',
   set:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>'
 };
-const TABS = [['home','홈','home'],['acc','계좌','acc'],['tax','절세','tax'],['draw','인출전략','draw'],['set','설정','set']];
+const TABS = [['home','홈','home'],['acc','계좌','acc'],['tax','절세','tax'],['plan','은퇴설계','draw']];   // 설정은 ⋮ 메뉴
 function renderNav(){
   $('#tabs').innerHTML = TABS.map(([k,l,i]) => `<button data-tab="${k}" class="${ui.tab===k?'on':''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[i]}</svg>${l}</button>`).join('');
   const opts = [['all','전체'], ...S.profile.members.map(m=>[m.id, m.name])];
@@ -751,15 +779,18 @@ function renderNav(){
 }
 function render(){
   renderNav();
-  const f = { home:renderHome, acc:renderAccounts, tax:renderTax, draw:renderDraw, set:renderSettings }[ui.tab];
+  const f = { home:renderHome, acc:renderAccounts, tax:renderTax, plan:renderDraw, set:renderSettings }[ui.tab] || renderHome;
   $('#main').innerHTML = f();
-  if(ui.tab==='draw') bindChart();
+  if(ui.tab==='plan') bindChart();
 }
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-tab]'); if(t){ ui.tab=t.dataset.tab; render(); window.scrollTo(0,0); return; }
   const o = e.target.closest('[data-owner]'); if(o){ ui.owner=o.dataset.owner; render(); return; }
   const act = e.target.closest('[data-act]'); if(act){ ACTIONS[act.dataset.act](act.dataset, act, e); }
 });
+// 접기 영역 열림 상태 기억 (다시 그려도 유지)
+document.addEventListener('toggle', e => { const d = e.target; if(d.tagName==='DETAILS' && d.dataset.key) ui.open[d.dataset.key] = d.open; }, true);
+const fold = (key, title, body, meta) => `<details class="fold" data-key="${key}" ${ui.open[key]?'open':''}><summary>${title}${meta?` <span class="meta">${meta}</span>`:''}</summary><div class="body">${body}</div></details>`;
 document.addEventListener('change', e => {
   const el = e.target.closest('[data-bind]'); if(!el) return;
   setPath(S, el.dataset.bind, el.type==='checkbox' ? el.checked : (el.dataset.num!=null ? numIn(el) : el.value));
@@ -768,40 +799,51 @@ document.addEventListener('change', e => {
 function numIn(el){ const v = parseFloat(String(el.value).replace(/,/g,'')); if(!isFinite(v)) return 0; return el.dataset.num==='man' ? Math.round(v*10000) : v; }
 function setPath(o, path, v){ const ks = path.split('.'); let c=o; for(let i=0;i<ks.length-1;i++){ c = c[isNaN(ks[i])?ks[i]:+ks[i]]; } c[ks[ks.length-1]] = v; }
 
-/* ---------- 홈 ---------- */
+/* ---------- 홈: 5초 안에 세 가지 — 자산이 얼마? 올해 혜택은? 은퇴 후 충분한가? ---------- */
+const TYPE_COLOR = { pension:'var(--p-credit)', irp:'var(--p-retire)', isa:'var(--s3)', general:'var(--p-non)' };
+function principalSum(a){ return S.deposits.filter(d=>d.accountId===a.id && (E.yearOf(d.date)||0) <= THIS_YEAR).reduce((s,d)=>s+d.amount,0); }
+function refundSummary(year){
+  const cls = E.classifyDeposits(S.accounts, S.deposits, S.profile.members);
+  const ms = S.profile.members.filter(m => ui.owner==='all' || m.id===ui.owner);
+  let refund=0, remain=0, remainRefund=0, paidP=0, paidI=0, credited=0;
+  for(const m of ms){
+    const y = cls.yearly[m.id+'|'+year] || { refund:0, remainTotal:E.RULES.totalCreditCap, pensionPaid:0, irpPaid:0, credited:0, rate:E.creditRate(m) };
+    refund += y.refund; remain += y.remainTotal; remainRefund += y.remainTotal * (y.rate || E.creditRate(m));
+    paidP += y.pensionPaid; paidI += y.irpPaid; credited += y.credited;
+  }
+  return { refund, remain, remainRefund, paidP, paidI, credited, ms, cls };
+}
 function renderHome(){
   const accs = visibleAccounts();
   if(!S.accounts.length) return `<div class="card"><h2>시작하기</h2>
     <p class="note" style="font-size:14px">연금저축·IRP·ISA 계좌를 등록하고 납입 내역과 평가액을 입력하면, 세액공제와 은퇴 후 인출 전략을 계산해 드립니다.</p>
     <div class="grid2" style="margin-top:10px"><button class="btn" data-act="newAccount">계좌 추가</button><button class="btn ghost" data-act="sample">예시로 둘러보기</button></div>
-    <p class="note" style="margin-top:10px">먼저 <b>설정</b>에서 가족 구성원의 출생연도와 공적연금을 입력하세요.</p></div>`;
+    <p class="note" style="margin-top:10px">오른쪽 위 ⋮ → <b>설정</b>에서 가족 출생연도·공적연금을 입력하고, 캐시플로우를 쓰면 로그인 후 불러오세요.</p></div>`;
   let total=0, principal=0; const byType={};
-  for(const a of accs){
-    const v = posOf(a).value; total += v;
-    const pr = S.deposits.filter(d=>d.accountId===a.id).reduce((s,d)=>s+d.amount,0); principal += pr;
-    byType[a.type] = (byType[a.type]||0) + v;
-  }
+  for(const a of accs){ const v = posOf(a).value; total += v; principal += principalSum(a); byType[a.type] = (byType[a.type]||0) + v; }
   const pnl = total - principal;
-  const tiles = Object.keys(TYPES).filter(k=>byType[k]).map(k=>`<div class="tile"><div class="lbl">${TYPES[k]}</div><div class="v">${eok(byType[k])}</div></div>`).join('');
-  const cls = E.classifyDeposits(S.accounts, S.deposits, S.profile.members);
-  const ms = S.profile.members.filter(m => ui.owner==='all' || m.id===ui.owner);
-  const credit = ms.map(m => {
-    const y = cls.yearly[m.id+'|'+THIS_YEAR] || { credited:0, refund:0, remainTotal:E.RULES.totalCreditCap };
-    return `<div class="row"><span class="k">${esc(m.name)}</span><span class="v">환급 ${man(y.refund)} <span class="meta">· 남은 한도 ${man(y.remainTotal)}</span></span></div>`;
-  }).join('');
-  const al = E.alerts(S, THIS_YEAR).filter(x => ui.owner==='all' || !x.owner || x.owner===ui.owner);
+  const kinds = Object.keys(TYPES).filter(k=>byType[k] > 0);
+  const stack = kinds.map(k=>`<i style="width:${byType[k]/total*100}%;background:${TYPE_COLOR[k]}"></i>`).join('');
+  const leg = kinds.map(k=>`<span><i style="background:${TYPE_COLOR[k]}"></i>${TYPES[k]}<b>${eok(byType[k])}</b></span>`).join('');
+  const r = refundSummary(THIS_YEAR);
   const sims = E.compareStrategies(S, { baseYear:THIS_YEAR });
   const best = sims.slice().sort(rankSims)[0];
+  const okRet = !best.depletedYear;
+  const al = E.alerts(S, THIS_YEAR).filter(x => x.level === 'warn');
   return `
-  <div class="card hero"><div class="lbl">총 평가액</div><div class="num">${eok(total)}</div>
-    <div class="sub">납입원금 ${eok(principal)} · <span class="${pnl>=0?'pos':'neg'}">${man(pnl,true)}</span></div>
-    <div class="grid2" style="margin-top:12px">${tiles}</div></div>
-  <div class="card"><h2>${THIS_YEAR}년 세액공제 예상</h2>${credit}</div>
-  ${al.length?`<div class="card"><h2>알림</h2>${al.map(x=>`<div class="alert ${x.level}"><b>${x.level==='warn'?'!':'i'}</b><span>${esc(x.text)}</span></div>`).join('')}</div>`:''}
-  <div class="card acc" data-tab="draw"><h2>추천 인출 전략<span class="sp"></span><span class="meta">자세히 ›</span></h2>
-    <div class="row"><span class="k">전략</span><span class="v">${E.STRATEGIES[best.strategy].label}</span></div>
-    <div class="row"><span class="k">평생 세금(추정)</span><span class="v">${eok(best.totalTax)}</span></div>
-    <div class="row"><span class="k">자산 유지</span><span class="v">${best.depletedYear?`${best.depletedYear}년 고갈 (${ageStr(best.depletedYear)})`:`${S.profile.sim.endAge}세까지 유지`}</span></div></div>`;
+  <div class="card hero"><div class="lbl">${THIS_YEAR}년 ${new Date().getMonth()+1}월 · ${ui.owner==='all'?'전체':esc(memberById(ui.owner).name)} 자산</div>
+    <div class="num">${eok(total)}</div>
+    <div class="sub">${principal?`납입원금 ${eok(principal)} · <span class="${pnl>=0?'pos':'neg'}">${pnl>=0?'+':''}${eok(pnl)}</span>`:'납입원금 미입력'}</div>
+    ${total>0?`<div class="stack">${stack}</div><div class="leg2">${leg}</div>`:''}</div>
+  <div class="kpi">
+    <div class="k1" data-tab="tax"><div class="lbl">올해 예상 환급</div><div class="big">${man(r.refund)}</div>
+      <div class="sub">${r.remain>0?`${man(r.remain)} 더 넣으면 +${man(r.remainRefund)}`:'공제 한도 다 채움 ✓'}</div></div>
+    <div class="k1" data-tab="plan"><div class="lbl">은퇴 후 자산</div><div class="big ${okRet?'ok':'bad'}">${okRet?`${S.profile.sim.endAge}세까지 ✓`:`${best.depletedYear}년 고갈`}</div>
+      <div class="sub">${okRet?`잔액 ${eok(best.endBalanceReal)} (현재가치)`:esc(ageStr(best.depletedYear))}</div></div>
+  </div>
+  ${al.length?`<div class="card">${al.slice(0,3).map(x=>`<div class="alert warn"><b>!</b><span>${esc(x.text)}</span></div>`).join('')}${al.length>3?`<div class="more">외 ${al.length-3}건</div>`:''}</div>`:''}
+  <div class="card acc" data-tab="plan"><div class="step"><b style="flex:1">추천 인출 전략 · ${E.STRATEGIES[best.strategy].label}</b><span class="meta">상세 ›</span></div>
+    <div class="meta" style="margin-top:4px">평생 세금(추정) ${eok(best.totalTax)} · ${E.STRATEGIES[best.strategy].desc}</div></div>`;
 }
 function ageStr(y){ return S.profile.members.map(m=>`${m.name} ${y-m.birthYear}세`).join(' · '); }
 function rankSims(a,b){ // 고갈이 늦을수록, 같으면 세금 적을수록
@@ -811,31 +853,23 @@ function rankSims(a,b){ // 고갈이 늦을수록, 같으면 세금 적을수록
   return a.totalTax-b.totalTax;
 }
 
-/* ---------- 계좌 ---------- */
+/* ---------- 계좌: 목록은 요약만, 원금 구분·납입은 상세에서 ---------- */
+function accReturn(a, pos){
+  const pr = E.isPension(a) ? E.principalOf(a, S.deposits, E.classifyDeposits(S.accounts, S.deposits, S.profile.members)).total : principalSum(a);
+  return pr > 0 ? (pos.value - pr) / pr : null;
+}
 function renderAccounts(){
   const accs = visibleAccounts();
-  const cls = E.classifyDeposits(S.accounts, S.deposits, S.profile.members);
   const cards = accs.map(a => {
-    const pos = posOf(a), m = memberById(a.owner);
-    let bar='', leg='';
-    if(E.isPension(a)){
-      const p = E.principalOf(a, S.deposits, cls); const gain = pos.value - p.total;
-      const parts = [['p-credit','공제분',p.credit],['p-non','비공제',p.noncredit],['p-retire','퇴직금',p.retire],[gain>=0?'p-gain':'p-loss','운용수익',gain]];
-      const tot = parts.reduce((s,x)=>s+Math.abs(x[2]),0)||1;
-      bar = `<div class="bar">${parts.filter(x=>x[2]).map(x=>`<i style="width:${Math.abs(x[2])/tot*100}%;background:var(--${x[0]})" title="${x[1]}"></i>`).join('')}</div>`;
-      leg = `<div class="legend">${parts.filter(x=>x[2]).map(x=>`<span><i style="background:var(--${x[0]})"></i>${x[1]} ${man(x[2])}</span>`).join('')}</div>`;
-    } else {
-      const pr = S.deposits.filter(d=>d.accountId===a.id).reduce((s,d)=>s+d.amount,0);
-      leg = `<div class="legend"><span>원금 ${eok(pr)}</span><span class="${pos.value-pr>=0?'pos':'neg'}">수익 ${(pos.value-pr>=0?'+':'')+eok(pos.value-pr)}</span>${a.type==='isa'&&a.isaMaturity?`<span>만기 ${esc(a.isaMaturity)}</span>`:''}</div>`;
-    }
+    const pos = posOf(a), m = memberById(a.owner), ret = accReturn(a, pos);
     return `<div class="card acc" data-act="openAccount" data-id="${a.id}">
       <div class="top"><span class="badge ${a.type}">${TYPES[a.type]}</span><span class="name">${esc(a.name)}</span><span class="val">${eok(pos.value)}</span></div>
-      <div class="meta">${esc(m.name)}${a.institution?' · '+esc(a.institution):''} · 평가 ${a.valueDate?esc(a.valueDate):'미입력'}</div>
-      ${bar}${leg}</div>`;
+      <div class="top" style="margin-top:3px"><span class="meta" style="flex:1">${esc(m.name)}${a.institution?' · '+esc(a.institution):''}${a.valueSrc==='cf'?' · 캐시플로우':''}</span>
+        <span class="ret ${ret==null?'meta':ret>=0?'pos':'neg'}">${ret==null?'원금 미입력':(ret>=0?'+':'')+(ret*100).toFixed(1)+'%'}</span></div></div>`;
   }).join('');
   return `${cards || '<div class="empty">등록된 계좌가 없습니다</div>'}
     <button class="btn block" data-act="newAccount">+ 계좌 추가</button>
-    <p class="note" style="margin-top:12px">종목·매매는 리밸런서에서 관리하고, 여기서는 계좌 평가액만 입력합니다. 연금계좌의 '공제분'은 연도별 한도(연금저축 600만·합산 900만)로 자동 판정됩니다.</p>`;
+    <p class="note" style="margin-top:12px">계좌를 누르면 원금 구분·평가액·납입 내역을 볼 수 있습니다. 종목·매매는 리밸런서에서 관리합니다.</p>`;
 }
 
 function accountForm(a){
@@ -845,9 +879,22 @@ function accountForm(a){
   const pOpts = `<option value="">이전 안 함 (재가입)</option>` + S.accounts.filter(x=>E.isPension(x)&&!x.closed).map(x=>`<option value="${x.id}" ${a.isaToPension===x.id?'selected':''}>${esc(x.name)}</option>`).join('');
   const deps = S.deposits.filter(d=>d.accountId===a.id).sort((x,y)=>x.date<y.date?1:-1);
   const pos = a.id ? posOf(a) : null;
-  return `<div class="sheet-bg" data-act="closeSheetBg"><div class="sheet" id="sheet">
-    <div class="hd"><h3>${isNew?'계좌 추가':esc(a.name)}</h3><button class="x" data-act="closeSheet">✕</button></div>
-    <div class="card" style="margin-top:4px">
+  let summary = '';
+  if(!isNew){
+    const ret = accReturn(a, pos);
+    let bar = '';
+    if(E.isPension(a)){
+      const p = E.principalOf(a, S.deposits, E.classifyDeposits(S.accounts, S.deposits, S.profile.members)); const gain = pos.value - p.total;
+      const parts = [['p-credit','공제분',p.credit],['p-non','비공제',p.noncredit],['p-retire','퇴직금',p.retire],[gain>=0?'p-gain':'p-loss','운용수익',gain]].filter(x=>x[2]);
+      const tot = parts.reduce((s,x)=>s+Math.abs(x[2]),0)||1;
+      if(parts.length) bar = `<div class="bar">${parts.map(x=>`<i style="width:${Math.abs(x[2])/tot*100}%;background:var(--${x[0]})"></i>`).join('')}</div>
+        <div class="legend">${parts.map(x=>`<span><i style="background:var(--${x[0]})"></i>${x[1]} ${man(x[2])}</span>`).join('')}</div>
+        <p class="note" style="margin-top:6px">인출할 때 비공제 → 퇴직금 → 공제분·수익 순으로 빠지며 세금이 달라집니다.</p>`;
+    }
+    summary = `<div class="card hero" style="margin-top:4px"><div class="lbl">${TYPES[a.type]} · ${esc(memberById(a.owner).name)}${a.institution?' · '+esc(a.institution):''}</div>
+      <div class="num">${eok(pos.value)}</div><div class="sub">${ret==null?'납입 내역을 넣으면 수익률이 계산됩니다':`수익률 <span class="${ret>=0?'pos':'neg'}">${(ret>=0?'+':'')+(ret*100).toFixed(1)}%</span>`}${a.valueDate?` · 평가 ${esc(a.valueDate)}`:''}</div>${bar}</div>`;
+  }
+  const infoForm = `<div class="card" style="margin-top:${isNew?4:0}px">
       <div class="fr"><label class="f"><span>종류</span><select id="fType">${tOpts}</select></label>
         <label class="f"><span>명의</span><select id="fOwner">${mOpts}</select></label></div>
       <div class="fr"><label class="f"><span>계좌 이름</span><input id="fName" value="${esc(a.name||'')}" placeholder="예: 연금저축1"></label>
@@ -865,7 +912,10 @@ function accountForm(a){
       </div>
       <div id="fLife" style="display:${E.isPension(a)?'block':'none'}"><label class="f" style="display:flex;gap:8px;align-items:center"><input id="fLifelong" type="checkbox" ${a.lifelong?'checked':''}><span style="margin:0;font-size:14px;color:var(--text)">종신형 수령 (세율 일괄 3.3%)</span></label></div>
       <button class="btn block" data-act="saveAccount" data-id="${a.id||''}">${isNew?'추가':'계좌 정보 저장'}</button>
-    </div>
+    </div>`;
+  return `<div class="sheet-bg" data-act="closeSheetBg"><div class="sheet" id="sheet">
+    <div class="hd"><h3>${isNew?'계좌 추가':esc(a.name)}</h3><button class="x" data-act="closeSheet">✕</button></div>
+    ${isNew ? infoForm : summary}
     ${isNew?'':`
     <div class="card"><h2>평가액</h2>
       <div class="fr"><label class="f"><span>현재 평가액(만원)</span><input id="fVal" inputmode="decimal" value="${a.reportedValue!=null&&a.reportedValue!==''?a.reportedValue/1e4:''}" placeholder="증권사 앱의 총평가"></label>
@@ -881,6 +931,7 @@ function accountForm(a){
       <div style="margin-top:8px">${deps.map(d=>`<div class="dep"><span class="d1">${esc(d.date)} <span class="meta">${KIND_SHORT[d.kind]||''}</span></span><b>${man(d.amount)}</b><button class="x" data-act="delDeposit" data-id="${d.id}" data-acc="${a.id}">✕</button></div>`).join('') || '<div class="empty">납입 내역 없음</div>'}</div>
       <p class="note">과거 납입은 연도별 합계로 한 줄씩 넣어도 됩니다. 세액공제를 받지 않은 해의 납입은 '공제 안 받은 납입'으로 넣으세요.</p>
     </div>
+    ${fold('accinfo', '계좌 정보 수정', infoForm.replace('class="card" style="margin-top:0px"','style=""'), a.openedAt?'':'개설일 미입력')}
     <button class="btn danger block" data-act="delAccount" data-id="${a.id}">계좌 삭제</button>`}
   </div></div>`;
 }
@@ -926,9 +977,9 @@ function renderTax(){
       <div class="row"><span class="k">만기 후 연금 이전 시 추가환급</span><span class="v">${man(transfer)}</span></div>
       ${a.isaMaturity?`<div class="meta">만기 ${esc(a.isaMaturity)} · 만기 후 60일 이내 이전해야 추가공제</div>`:''}</div>`;
   }).join('');
-  return `<div class="card" style="display:flex;align-items:center;gap:10px"><b style="flex:1">세액공제 연도</b>${yearSel}</div>
-    ${memberCards}${isaCards}
-    <div class="card"><h2>절세 규칙 요약 (${E.RULES.year}년 기준)</h2>
+  const r = refundSummary(y);
+  const fillLine = y===THIS_YEAR && r.remain>0 ? `<div class="alert info" style="margin-top:10px"><b>i</b><span>12월 31일까지 ${man(r.remain)} 더 넣으면 환급 <b>${man(r.remainRefund)}</b> 추가 (사람별 상세 참고)</span></div>` : '';
+  const rules = `<div class="card"><h2>절세 규칙 요약 (${E.RULES.year}년 기준)</h2>
       <div class="row"><span class="k">연금저축 공제한도</span><span class="v">600만원</span></div>
       <div class="row"><span class="k">연금저축+IRP 합산</span><span class="v">900만원</span></div>
       <div class="row"><span class="k">공제율 (총급여 5,500만 기준)</span><span class="v">16.5% / 13.2%</span></div>
@@ -937,6 +988,17 @@ function renderTax(){
       <div class="row"><span class="k">사적연금 분리과세 기준</span><span class="v">연 1,500만원</span></div>
       <div class="row"><span class="k">퇴직소득 연금수령 감면</span><span class="v">30 / 40 / 50%</span></div>
       <p class="note">세법은 바뀔 수 있습니다. 실제 신고·인출 전 금융회사와 국세청 기준을 확인하세요.</p></div>`;
+  return `<div class="card hero"><div class="step"><span class="lbl" style="flex:1">${y}년 · ${ui.owner==='all'?'부부 합산':esc(memberById(ui.owner).name)}</span>${yearSel}</div>
+      <div class="lbl" style="margin-top:6px">예상 환급</div><div class="num" style="color:var(--accent)">${man(r.refund)}</div>
+      <div class="grid2" style="margin-top:10px">
+        <div class="tile"><div class="lbl">연금저축 납입</div><div class="v">${man(r.paidP)}</div></div>
+        <div class="tile"><div class="lbl">IRP 납입</div><div class="v">${man(r.paidI)}</div></div>
+        <div class="tile"><div class="lbl">세액공제 적용액</div><div class="v">${man(r.credited)}</div></div>
+        <div class="tile"><div class="lbl">추가 납입 가능</div><div class="v">${man(r.remain)}</div></div></div>
+      ${fillLine}</div>
+    ${fold('taxPeople', '사람별 상세', memberCards)}
+    ${isaCards ? fold('taxIsa', 'ISA 절세 현황', isaCards, isas.length+'개') : ''}
+    ${fold('taxRules', '절세 규칙 요약', rules)}`;
 }
 document.addEventListener('change', e => { if(e.target.id==='taxYear'){ ui.taxYear=+e.target.value; render(); } });
 
@@ -944,30 +1006,40 @@ document.addEventListener('change', e => { if(e.target.id==='taxYear'){ ui.taxYe
 let lastSims = null;
 function renderDraw(){
   const sim = S.profile.sim;
-  const f = (k,l,unit,step) => `<label class="f"><span>${l}</span><input inputmode="decimal" data-bind="profile.sim.${k}" ${unit==='man'?'data-num="man"':'data-num'} value="${unit==='man'?(+sim[k]||0)/1e4:sim[k]}"></label>`;
-  const inputs = `<div class="card"><h2>가정</h2>
-    <div class="fr">${f('startYear','인출 시작 연도')}${f('endAge','계산 종료 나이')}</div>
+  const f = (k,l,unit) => `<label class="f"><span>${l}</span><input inputmode="decimal" data-bind="profile.sim.${k}" ${unit==='man'?'data-num="man"':'data-num'} value="${unit==='man'?(+sim[k]||0)/1e4:sim[k]}"></label>`;
+  const pubs = S.profile.members.filter(m=>m.publicPension && m.publicPension.monthly).map(m=>`${esc(m.name)} ${man(m.publicPension.monthly)}(${m.publicPension.startYear}~)`).join(', ');
+  const nInc = (sim.incomes||[]).length, nLump = (sim.lumps||[]).length, nPh = (sim.spendPhases||[]).length;
+  const condSummary = `<div class="cond"><b>${sim.startYear}년</b> 인출 시작 · 생활비 <b>월 ${man(sim.monthlyNeed)}</b>${nPh?` (구간 ${nPh}개)`:''}<br>
+    수익률 <b>${sim.returnRate}%</b> · 물가 <b>${sim.inflation}%</b> · ${sim.endAge}세까지 계산<br>
+    공적연금 ${pubs || '<span class="bad">미입력</span>'}${nInc||nLump?` · 수입 ${nInc}건 · 목돈 ${nLump}건`:''}</div>`;
+  const condEdit = `<div class="fr">${f('startYear','인출 시작 연도')}${f('endAge','계산 종료 나이')}</div>
     <div class="fr">${f('monthlyNeed','기본 월 생활비(만원)','man')}${f('otherMonthly','기타 월수입(만원)','man')}</div>
     <div class="fr">${f('returnRate','연 수익률(%)')}${f('inflation','물가상승률(%)')}</div>
-    <p class="note">모든 금액은 현재가치이고, 계산할 때 물가상승률을 반영합니다. 공적연금은 설정에서 입력합니다. 은퇴 전에는 각 계좌의 '연 납입 계획'만큼 적립한다고 가정합니다.</p></div>` + planCard();
-  if(!S.accounts.length) return inputs + '<div class="empty">계좌를 먼저 등록하세요</div>';
+    <p class="note">금액은 모두 현재가치, 계산할 때 물가를 반영합니다. 공적연금은 ⋮ › 설정에서 입력합니다.</p>`;
+  const step1 = `<div class="card"><div class="step"><span class="no">1</span><b style="flex:1">은퇴 조건</b><button class="btn sm ghost" data-act="toggleCond">${ui.editCond?'닫기':'수정'}</button></div>
+    <div style="margin-top:8px">${ui.editCond ? condEdit : condSummary}</div></div>
+    ${fold('planInputs', '수입 · 목돈 · 생활비 구간', planCard(), `${nInc+nLump+nPh}건`)}`;
+  if(!S.accounts.length) return step1 + '<div class="empty">계좌를 먼저 등록하세요</div>';
   const sims = E.compareStrategies(S, { baseYear:THIS_YEAR }); lastSims = sims;
   const ranked = sims.slice().sort(rankSims); const bestKey = ranked[0].strategy;
-  const cards = sims.map(r => `<div class="s ${ui.strat===r.strategy?'on':''}" data-act="pickStrat" data-k="${r.strategy}">
+  if(!ui.stratPicked) ui.strat = bestKey;
+  const cards = ranked.map(r => `<div class="s ${ui.strat===r.strategy?'on':''}" data-act="pickStrat" data-k="${r.strategy}">
     <div class="t1"><i style="background:${SCOLOR[r.strategy]}"></i>${E.STRATEGIES[r.strategy].label}${r.strategy===bestKey?'<span class="best">추천</span>':''}</div>
     <div class="d">${E.STRATEGIES[r.strategy].desc}</div>
     <div class="grid2"><div class="tile"><div class="lbl">평생 세금</div><div class="v">${eok(r.totalTax)}</div></div>
-      <div class="tile"><div class="lbl">${r.depletedYear?'고갈':'종료 시 잔액(현재가치)'}</div><div class="v">${r.depletedYear?`${r.depletedYear}년`:eok(r.endBalanceReal)}</div></div></div>
+      <div class="tile"><div class="lbl">${r.depletedYear?'자산 고갈':`${sim.endAge}세 잔액(현재가치)`}</div><div class="v ${r.depletedYear?'bad':''}">${r.depletedYear?`${r.depletedYear}년`:eok(r.endBalanceReal)}</div></div></div>
   </div>`).join('');
-  const diff = ranked.length>1 ? Math.max(...sims.map(s=>s.totalTax)) - ranked[0].totalTax : 0;
+  const diff = Math.max(...sims.map(s=>s.totalTax)) - ranked[0].totalTax;
   const sel = sims.find(s=>s.strategy===ui.strat) || sims[0];
-  return inputs + `
-    <div class="card"><h2>전략 비교</h2><div class="strat">${cards}</div>
-      ${diff>1e6?`<p class="note" style="margin-top:8px">가장 세금이 많은 전략과의 차이: <b>${eok(diff)}</b></p>`:''}</div>
-    <div class="card"><h2>잔액 추이 (현재가치)</h2>${chartSvg(sims)}
+  const detail = `<div class="card"><h2>잔액 추이 (현재가치)</h2>${chartSvg(sims)}
       <div class="legend" style="margin-top:6px">${sims.map(r=>`<span><i style="background:${SCOLOR[r.strategy]}"></i>${E.STRATEGIES[r.strategy].label}</span>`).join('')}</div></div>
-    <div class="card"><h2>연도별 계획 — ${E.STRATEGIES[sel.strategy].label}</h2>${yearTable(sel)}
+    <div class="card"><h2>연도별 인출 — ${E.STRATEGIES[sel.strategy].label}</h2>${yearTable(sel)}
       <p class="note">세금 = 인출세 + 공적연금 세금 + 1,500만 정산(추정). 연금소득공제·기본공제만 반영한 근사치입니다.</p></div>`;
+  return step1 + `
+    <div class="card"><div class="step"><span class="no">2</span><b>전략 비교</b></div>
+      <div class="strat" style="margin-top:10px">${cards}</div>
+      ${diff>1e6?`<p class="note" style="margin-top:8px">추천 전략이 가장 불리한 전략보다 세금 <b>${eok(diff)}</b> 적습니다.</p>`:''}</div>
+    ${fold('planDetail', '<span class="no" style="width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:12px;display:inline-flex;align-items:center;justify-content:center">3</span> 상세 결과', detail, '그래프 · 연도별 표')}`;
 }
 function yearTable(r){
   const accs = S.accounts.filter(a=>!a.closed);
@@ -1030,7 +1102,7 @@ function renderSettings(){
       <label class="f"><span>수령 시작 연도</span><input inputmode="numeric" data-bind="profile.members.${i}.publicPension.startYear" data-num value="${m.publicPension.startYear}"></label></div>
     <label class="f"><span>공적연금 과세대상 비율(%)</span><input inputmode="decimal" data-bind="profile.members.${i}.publicPension.taxableRatio" data-num value="${m.publicPension.taxableRatio}"><div class="hint">2002년 이후 기여분만 과세됩니다. 공단 원천징수 내역으로 보정하세요.</div></label>
   </div>`).join('');
-  return cloudCard() + ms + `<div class="card"><h2>데이터</h2>
+  return `<div class="card" style="display:flex;align-items:center;gap:8px"><b style="flex:1">설정</b><button class="btn sm ghost" data-tab="home">닫기</button></div>` + cloudCard() + ms + `<div class="card"><h2>데이터</h2>
     <div class="grid2"><button class="btn ghost" data-act="export">백업 파일 저장</button><button class="btn ghost" data-act="import">백업 불러오기</button></div>
     <p class="note" style="margin-top:8px">로그인하지 않으면 데이터는 이 기기의 브라우저에만 저장됩니다. 로그인하면 클라우드에도 저장됩니다.</p>
     <button class="btn danger block" style="margin-top:8px" data-act="reset">전체 초기화</button></div>
@@ -1048,7 +1120,9 @@ const CF_URL = tab => 'https://rcntiger.github.io/cashflow/' + (tab ? '#' + tab 
 const cfLink = (tab, text) => `<a class="cflink" href="${CF_URL(tab)}">${text || '캐시플로우에서 수정 ›'}</a>`;
 function appMenu(){
   return `<div class="sheet-bg" data-act="closeSheetBg"><div class="sheet">
-    <div class="hd"><h3>다른 앱으로 이동</h3><button class="x" data-act="closeSheet">✕</button></div>
+    <div class="hd"><h3>메뉴</h3><button class="x" data-act="closeSheet">✕</button></div>
+    <button class="card applink menuitem" data-act="goSettings"><b>설정</b><span class="meta">가족·공적연금·로그인·캐시플로우·백업</span><span class="sp"></span>›</button>
+    <div class="meta" style="margin:14px 2px 0">다른 앱으로 이동</div>
     ${APP_LINKS.map(a=>`<a class="card applink" href="${a.url}"><b>${a.name}</b><span class="meta">${a.desc}</span><span class="sp"></span>›</a>`).join('')}
     <p class="note">같은 주소(rcntiger.github.io)의 앱끼리는 로그인이 이어집니다. 홈 화면에 따로 설치한 앱은 처음 한 번 로그인이 필요할 수 있습니다.</p>
   </div></div>`;
@@ -1375,6 +1449,8 @@ function formSheet(title, body, actSave, id, canDel){
 }
 const PLAN_ACTIONS = {
   appMenu(){ openSheet(appMenu()); },
+  goSettings(){ closeSheet(); ui.tab = 'set'; render(); window.scrollTo(0,0); },
+  toggleCond(){ ui.editCond = !ui.editCond; render(); },
   sendCode, verifyCode,
   otpBack(){ _otpEmail = ''; render(); },
   async signOut(){ if(sb) await sb.auth.signOut(); _user = null; setCloud('off'); render(); },
@@ -1470,7 +1546,7 @@ const ACTIONS = {
   },
   delDeposit(d){ S.deposits=S.deposits.filter(x=>x.id!==d.id); save(); openSheet(accountForm(S.accounts.find(x=>x.id===d.acc))); },
   delAccount(d){ if(!confirm('이 계좌와 납입 내역을 삭제할까요?')) return; S.accounts=S.accounts.filter(x=>x.id!==d.id); S.deposits=S.deposits.filter(x=>x.accountId!==d.id); save(); closeSheet(); render(); },
-  pickStrat(d){ ui.strat=d.k; render(); },
+  pickStrat(d){ ui.strat=d.k; ui.stratPicked = true; render(); },
   export(){
     const blob = new Blob([JSON.stringify(S,null,1)],{type:'application/json'}); const u=URL.createObjectURL(blob);
     const a=document.createElement('a'); a.href=u; a.download=`pension-backup-${new Date().toISOString().slice(0,10)}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(u),1000);
