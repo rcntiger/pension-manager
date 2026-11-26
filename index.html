@@ -1344,9 +1344,11 @@ function cfBuild(D, RB){
     }
     // 리밸런서 납입원금: 캐시플로우의 리밸런서 연결(rbMap)로 이 자산에 묶인 계좌들의 원금 합계
     let principal = 0;
-    if(RB && RB.accounts) for(const [rbName, cfId] of Object.entries(D.rbMap || {})){
+    if(RB && RB.accounts) for(const [rbKey, cfId] of Object.entries(D.rbMap || {})){
       if(cfId !== a.id) continue;
-      const ra = RB.accounts.find(x => x.name === rbName); if(!ra || !(+ra.principal > 0)) continue;
+      // 캐시플로우 연결 키: '#고유번호'(새 방식) 또는 계좌 이름(예전 방식)
+      const ra = rbKey.charAt(0) === '#' ? RB.accounts.find(x => String(x.id) === rbKey.slice(1)) : RB.accounts.find(x => x.name === rbKey);
+      if(!ra || !(+ra.principal > 0)) continue;
       principal += ra.market === 'US' ? +ra.principal * (RB.rate || 0) : +ra.principal;
     }
     out.assets.push({ cfId:a.id, name:a.name + (owner && owner !== '공동' ? ` (${cfNick(D, owner)})` : ''), cat:a.cat, acct:a.acct, rawName:a.name, value:Math.round(cfNum(a.value)*1e4), owner, ownerGuessed, principal:Math.round(principal), src:a.src || '' });
